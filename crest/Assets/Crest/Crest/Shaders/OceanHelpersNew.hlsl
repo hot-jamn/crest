@@ -95,7 +95,7 @@ void SampleDisplacementsNormals(in Texture2DArray i_dispSampler, in float3 i_uv_
 		const float2x2 jacobian = (float4(disp_x.xz, disp_z.xz) - disp.xzxz) / i_texelSize;
 		// Determinant is < 1 for pinched, < 0 for overlap/inversion
 		const float det = determinant( jacobian );
-		io_sss += i_wt * saturate( CREST_SSS_MAXIMUM - CREST_SSS_RANGE * det );
+		io_sss += i_wt * det;
 	}
 #endif // _SUBSURFACESCATTERING_ON
 
@@ -124,23 +124,25 @@ void SampleAlbedo(in Texture2DArray i_oceanAlbedoSampler, in float3 i_uv_slice, 
 
 void SampleSeaDepth(in Texture2DArray i_oceanDepthSampler, in float3 i_uv_slice, in float i_wt, inout half io_oceanDepth)
 {
-	const half2 terrainHeight_seaLevelOffset = i_oceanDepthSampler.SampleLevel(LODData_linear_clamp_sampler, i_uv_slice.xyz, 0.0).xy;
+	half2 terrainHeight_seaLevelOffset = i_oceanDepthSampler.SampleLevel(LODData_linear_clamp_sampler, i_uv_slice.xyz, 0.0).xy;
+	terrainHeight_seaLevelOffset.x = max(terrainHeight_seaLevelOffset.x, -CREST_FLOAT_MAXIMUM);
 	const half waterDepth = _OceanCenterPosWorld.y - terrainHeight_seaLevelOffset.x + terrainHeight_seaLevelOffset.y;
-	io_oceanDepth += i_wt * (waterDepth - CREST_OCEAN_DEPTH_BASELINE);
+	io_oceanDepth += i_wt * waterDepth;
 }
 
 void SampleSingleSeaDepth(Texture2DArray i_oceanDepthSampler, float3 i_uv_slice, inout half io_oceanDepth, inout half io_seaLevelOffset)
 {
-	const half2 terrainHeight_seaLevelOffset = i_oceanDepthSampler.SampleLevel(LODData_linear_clamp_sampler, i_uv_slice, 0.0).xy;
-	const half waterDepth = _OceanCenterPosWorld.y - terrainHeight_seaLevelOffset.x + terrainHeight_seaLevelOffset.y;
-	io_oceanDepth = waterDepth - CREST_OCEAN_DEPTH_BASELINE;
+	half2 terrainHeight_seaLevelOffset = i_oceanDepthSampler.SampleLevel(LODData_linear_clamp_sampler, i_uv_slice, 0.0).xy;
+	terrainHeight_seaLevelOffset.x = max(terrainHeight_seaLevelOffset.x, -CREST_FLOAT_MAXIMUM);
+	io_oceanDepth = _OceanCenterPosWorld.y - terrainHeight_seaLevelOffset.x + terrainHeight_seaLevelOffset.y;
 	io_seaLevelOffset = terrainHeight_seaLevelOffset.y;
 }
 
 void SampleSeaDepth(in Texture2DArray i_oceanDepthSampler, in float3 i_uv_slice, in float i_wt, inout half io_oceanDepth, inout half io_seaLevelOffset, const CascadeParams i_cascadeParams, inout float2 io_seaLevelDerivs)
 {
-	const half2 terrainHeight_seaLevelOffset = i_oceanDepthSampler.SampleLevel( LODData_linear_clamp_sampler, i_uv_slice, 0.0 ).xy;
-	io_oceanDepth += i_wt * (_OceanCenterPosWorld.y - terrainHeight_seaLevelOffset.x + terrainHeight_seaLevelOffset.y - CREST_OCEAN_DEPTH_BASELINE);
+	half2 terrainHeight_seaLevelOffset = i_oceanDepthSampler.SampleLevel( LODData_linear_clamp_sampler, i_uv_slice, 0.0 ).xy;
+	terrainHeight_seaLevelOffset.x = max(terrainHeight_seaLevelOffset.x, -CREST_FLOAT_MAXIMUM);
+	io_oceanDepth += i_wt * (_OceanCenterPosWorld.y - terrainHeight_seaLevelOffset.x + terrainHeight_seaLevelOffset.y);
 	io_seaLevelOffset += i_wt * terrainHeight_seaLevelOffset.y;
 
 	{
@@ -159,6 +161,7 @@ void SampleSeaDepth(in Texture2DArray i_oceanDepthSampler, in float3 i_uv_slice,
 void SampleTerrainHeight(const Texture2DArray i_texture, const float3 i_uv, inout half io_terrainHeight)
 {
 	io_terrainHeight = i_texture.SampleLevel(LODData_linear_clamp_sampler, i_uv, 0.0).x;
+	io_terrainHeight = max(io_terrainHeight, -CREST_FLOAT_MAXIMUM);
 }
 
 void SampleSeaLevelOffset(in Texture2DArray i_oceanDepthSampler, in float3 i_uv_slice, in float i_wt, inout half io_seaLevelOffset)
@@ -171,10 +174,18 @@ void SampleShadow(in Texture2DArray i_oceanShadowSampler, in float3 i_uv_slice, 
 	io_shadow += i_wt * i_oceanShadowSampler.SampleLevel(LODData_linear_clamp_sampler, i_uv_slice, 0.0).xy;
 }
 
+bool IsOutsideOfUV(float2 uv, float offset)
+{
+	half2 r = abs(uv - 0.5);
+	const half rMax = 0.5 - offset;
+	return max(r.x, r.y) > rMax;
+}
+
 void PosToSliceIndices
 (
 	const float2 worldXZ,
 	const float minSlice,
+	const float maxSlice,
 	const float oceanScale0,
 	out uint slice0,
 	out uint slice1,
@@ -185,9 +196,7 @@ void PosToSliceIndices
 	const float taxicab = max(offsetFromCenter.x, offsetFromCenter.y);
 	const float radius0 = oceanScale0;
 	float sliceNumber = log2( max( taxicab / radius0, 1.0 ) );
-	// Don't use last slice - this is a 'transition' slice used to cross fade waves between
-	// LOD resolutions to avoid pops.
-	sliceNumber = clamp( sliceNumber, minSlice, _SliceCount - 2.0 );
+	sliceNumber = clamp( sliceNumber, minSlice, maxSlice );
 
 	lodAlpha = frac(sliceNumber);
 	slice0 = floor(sliceNumber);

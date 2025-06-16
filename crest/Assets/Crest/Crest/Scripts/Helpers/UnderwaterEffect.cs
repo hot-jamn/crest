@@ -8,11 +8,8 @@
 
 using UnityEngine;
 using static Crest.UnderwaterRenderer;
-
-#if UNITY_EDITOR
 using UnityEditor;
 using System.Collections.Generic;
-#endif
 
 namespace Crest
 {
@@ -66,7 +63,7 @@ namespace Crest
 
         private void Start()
         {
-            if (!TryGetComponent<Renderer>(out var _rend))
+            if (!TryGetComponent(out _rend))
             {
                 Debug.LogError($"Crest: No renderer attached to <i>{this}</i>. Please attach on or use the prefab.");
                 return;

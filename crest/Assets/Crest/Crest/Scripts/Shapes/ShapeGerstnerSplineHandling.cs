@@ -23,15 +23,23 @@ namespace Crest
             minHeight = 10000f;
             maxHeight = -10000f;
 
-            var splinePoints = spline.GetComponentsInChildren<SplinePoint>();
+            var splinePoints = spline.GetComponentsInChildren<SplinePoint>(includeInactive: false);
+
+            if (splinePoints.Length < 2) return false;
+
+#if UNITY_EDITOR
+#if UNITY_2022_3_OR_NEWER
+            // Do not proceed further otherwise exception:
+            // Transform cannot be used during an Undo operation. Use 'Undo.isProcessing' to check before accessing.
+            if (UnityEditor.Undo.isProcessing) return true;
+#endif
+#endif
 
             foreach (var sp in splinePoints)
             {
                 minHeight = Mathf.Min(minHeight, sp.transform.position.y);
                 maxHeight = Mathf.Max(maxHeight, sp.transform.position.y);
             }
-
-            if (splinePoints.Length < 2) return false;
 
             var splinePointCount = splinePoints.Length;
             if (spline._closed && splinePointCount > 2)
@@ -161,8 +169,8 @@ namespace Crest
                 normal.z = -tangent.x;
                 normal.y = 0f;
                 normal = normal.normalized;
-                sampledPtsOffSplineLeft[i] = sampledPtsOnSpline[i] - normal * radiusLeft * radiusMultiplier[i];
-                sampledPtsOffSplineRight[i] = sampledPtsOnSpline[i] + normal * radiusRight * radiusMultiplier[i];
+                sampledPtsOffSplineLeft[i] = sampledPtsOnSpline[i] - radiusLeft * radiusMultiplier[i] * normal;
+                sampledPtsOffSplineRight[i] = sampledPtsOnSpline[i] + radiusMultiplier[i] * radiusRight * normal;
             }
             if (spline._closed)
             {

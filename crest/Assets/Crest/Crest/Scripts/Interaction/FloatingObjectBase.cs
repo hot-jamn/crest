@@ -3,10 +3,7 @@
 // This file is subject to the MIT License as seen in the root of this folder structure (LICENSE)
 
 using UnityEngine;
-
-#if UNITY_EDITOR
 using UnityEditor;
-#endif
 
 namespace Crest
 {
@@ -39,17 +36,6 @@ namespace Crest
                 );
 
                 isValid = false;
-            }
-
-            var rbs = GetComponentsInChildren<Rigidbody>();
-            if (rbs.Length != 1)
-            {
-                showMessage
-                (
-                    $"Expected to have one rigidbody on floating object, currently has {rbs.Length} object(s).",
-                    "Remove additional <i>Rigidbody</i> components.",
-                    ValidatedHelper.MessageType.Error, this
-                );
             }
 
             return isValid;

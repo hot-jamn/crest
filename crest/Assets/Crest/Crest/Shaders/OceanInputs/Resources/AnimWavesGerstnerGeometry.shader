@@ -72,6 +72,7 @@ Shader "Crest/Inputs/Animated Waves/Gerstner Geometry"
             CBUFFER_END
 
             CBUFFER_START(CrestPerOceanInput)
+            half _FeatherWidth;
             int _WaveBufferSliceIndex;
             float _AverageWavelength;
             float _AttenuationInShallows;
@@ -109,10 +110,11 @@ Shader "Crest/Inputs/Animated Waves/Gerstner Geometry"
                 float wt = input.invNormDistToShoreline_weight.y;
 
                 // Attenuate if depth is less than half of the average wavelength
-                const half2 terrainHeight_seaLevelOffset = _LD_TexArray_SeaFloorDepth.SampleLevel(LODData_linear_clamp_sampler, input.uv_slice, 0.0).xy;
+                half2 terrainHeight_seaLevelOffset = _LD_TexArray_SeaFloorDepth.SampleLevel(LODData_linear_clamp_sampler, input.uv_slice, 0.0).xy;
+                terrainHeight_seaLevelOffset.x = max(terrainHeight_seaLevelOffset.x, -CREST_FLOAT_MAXIMUM);
                 const half depth = _OceanCenterPosWorld.y - terrainHeight_seaLevelOffset.x + terrainHeight_seaLevelOffset.y;
                 half depth_wt = saturate(2.0 * depth / _AverageWavelength);
-                if (_MaximumAttenuationDepth < CREST_OCEAN_DEPTH_BASELINE)
+                if (_MaximumAttenuationDepth < CREST_MAXIMUM_ATTENUATION_DEPTH)
                 {
                     depth_wt = lerp(depth_wt, 1.0, saturate(depth / _MaximumAttenuationDepth));
                 }
@@ -121,6 +123,16 @@ Shader "Crest/Inputs/Animated Waves/Gerstner Geometry"
 
                 // Feature at front/back
                 wt *= min( input.invNormDistToShoreline_weight.x / _FeatherWaveStart, 1.0 );
+
+                if (_FeatherWidth > 0.0)
+                {
+                    // Feather at front/back
+                    if( input.invNormDistToShoreline_weight.x > 0.5 )
+                    {
+                        input.invNormDistToShoreline_weight.x = 1.0 - input.invNormDistToShoreline_weight.x;
+                    }
+                    wt *= min( input.invNormDistToShoreline_weight.x / _FeatherWidth, 1.0 );
+                }
 
                 // Quantize wave direction and interpolate waves
                 float axisHeading = atan2( input.axis.y, input.axis.x ) + 2.0 * 3.141592654;

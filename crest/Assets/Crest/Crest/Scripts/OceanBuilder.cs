@@ -152,6 +152,8 @@ namespace Crest
 
         public static Transform GenerateMesh(OceanRenderer ocean, List<OceanChunkRenderer> tiles, int lodDataResolution, int geoDownSampleFactor, int lodCount)
         {
+            OceanChunkRenderer.s_Count = 0;
+
             if (lodCount < 1)
             {
                 Debug.LogError("Crest: Invalid LOD count: " + lodCount.ToString(), ocean);
@@ -246,6 +248,10 @@ namespace Crest
             float end_x = 0.5f + skirtXplus * dx;
             float end_z = 0.5f + skirtZplus * dx;
 
+            // With a default value of 100, this will reach the horizon at all levels at
+            // a far plane of 200k.
+            var extentsMultiplier = ocean._extentsSizeMultiplier * (LodDataMgr.MAX_LOD_COUNT + 1 - ocean.CurrentLodCount);
+
             for (float j = 0; j < sideLength_verts_z; j++)
             {
                 // interpolate z across patch
@@ -253,7 +259,7 @@ namespace Crest
 
                 // push outermost edge out to horizon
                 if (pt == PatchType.FatXZOuter && j == sideLength_verts_z - 1f)
-                    z *= ocean._extentsSizeMultiplier;
+                    z *= extentsMultiplier;
 
                 for (float i = 0; i < sideLength_verts_x; i++)
                 {
@@ -262,7 +268,7 @@ namespace Crest
 
                     // push outermost edge out to horizon
                     if (i == sideLength_verts_x - 1f && (pt == PatchType.FatXOuter || pt == PatchType.FatXZOuter))
-                        x *= ocean._extentsSizeMultiplier;
+                        x *= extentsMultiplier;
 
                     // could store something in y, although keep in mind this is a shared mesh that is shared across multiple lods
                     verts.Add(new Vector3(x, 0f, z));
@@ -339,6 +345,9 @@ namespace Crest
                 // to allow for horizontal displacement
                 mesh.RecalculateBounds();
                 bounds = mesh.bounds;
+                // Increase snapping allowance (see #1148). Value was chosen by observation with a
+                // custom debug mode to show pixels that were out of bounds.
+                dx *= 3f;
                 bounds.extents = new Vector3(bounds.extents.x + dx, bounds.extents.y, bounds.extents.z + dx);
                 mesh.bounds = bounds;
                 mesh.name = pt.ToString();
@@ -475,7 +484,10 @@ namespace Crest
                 // the rest of the tiles by LOD index. all this happens before layer 0 - the sorting layer takes priority over the
                 // render queue it seems! ( https://cdry.wordpress.com/2017/04/28/unity-render-queues-vs-sorting-layers/ ). This pushes
                 // ocean rendering way early, so transparent objects will by default render afterwards, which is typical for water rendering.
-                mr.sortingOrder = -lodCount + (patchTypes[i] == PatchType.Interior ? -1 : lodIndex);
+                if (!ocean._enableRenderQueueSorting)
+                {
+                    mr.sortingOrder = -lodCount + (patchTypes[i] == PatchType.Interior ? -1 : lodIndex);
+                }
 
                 // This setting is ignored by Unity for the transparent ocean shader.
                 mr.receiveShadows = false;
@@ -488,7 +500,7 @@ namespace Crest
                 if (rotateXOutwards)
                 {
                     if (Mathf.Abs(pos.y) >= Mathf.Abs(pos.x))
-                        patch.transform.localEulerAngles = -Vector3.up * 90f * Mathf.Sign(pos.y);
+                        patch.transform.localEulerAngles = 90f * Mathf.Sign(pos.y) * -Vector3.up;
                     else
                         patch.transform.localEulerAngles = pos.x < 0f ? Vector3.up * 180f : Vector3.zero;
                 }

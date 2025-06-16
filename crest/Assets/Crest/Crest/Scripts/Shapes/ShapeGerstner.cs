@@ -6,10 +6,7 @@ using UnityEngine;
 using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering;
 using Unity.Collections.LowLevel.Unsafe;
-
-#if UNITY_EDITOR
 using UnityEditor;
-#endif
 
 namespace Crest
 {
@@ -25,13 +22,18 @@ namespace Crest
         /// </summary>
         [SerializeField, HideInInspector]
 #pragma warning disable 414
-        int _version = 0;
+        int _version = 1;
 #pragma warning restore 414
 
         [Header("Wave Conditions")]
 
+        [Tooltip("Use a swell spectrum as the default and other tweaks. Mainly affects the default spectrum (when none is assigned).")]
+        public bool _swell;
+
         [Tooltip("Each Gerstner wave is actually a pair of waves travelling in opposite directions (similar to FFT). This weight is applied to the wave travelling in against-wind direction. Set to 0 to obtain simple single waves."), Range(0f, 1f)]
+        [Predicated(nameof(_swell), inverted: true)]
         public float _reverseWaveWeight = 0.5f;
+        float ReverseWaveWeight => _swell ? 0f : _reverseWaveWeight;
 
         [Header("Generation Settings")]
         [Delayed, Tooltip("How many wave components to generate in each octave.")]
@@ -47,6 +49,32 @@ namespace Crest
         [SerializeField]
         DebugFields _debug = new DebugFields();
         protected override DebugFields DebugSettings => _debug;
+
+
+        protected override OceanWaveSpectrum DefaultSpectrum => _swell ? SwellSpectrum : WindSpectrum;
+        static OceanWaveSpectrum s_SwellSpectrum;
+        public static OceanWaveSpectrum SwellSpectrum
+        {
+            get
+            {
+                if (s_SwellSpectrum == null)
+                {
+                    s_SwellSpectrum = ScriptableObject.CreateInstance<OceanWaveSpectrum>();
+                    s_SwellSpectrum.name = "Swell Waves (auto)";
+                    s_SwellSpectrum._powerDisabled[0] = true;
+                    s_SwellSpectrum._powerDisabled[1] = true;
+                    s_SwellSpectrum._powerDisabled[2] = true;
+                    s_SwellSpectrum._powerDisabled[3] = true;
+                    s_SwellSpectrum._powerDisabled[4] = true;
+                    s_SwellSpectrum._powerDisabled[5] = true;
+                    s_SwellSpectrum._powerDisabled[6] = true;
+                    s_SwellSpectrum._powerDisabled[7] = true;
+                    s_SwellSpectrum._waveDirectionVariance = 15f;
+                }
+
+                return s_SwellSpectrum;
+            }
+        }
 
 
         protected override int MinimumResolution => 8;
@@ -413,7 +441,7 @@ namespace Crest
             {
                 var amp = _activeSpectrum.GetAmplitude(_wavelengths[i], _componentsPerOctave, windSpeed, out _powers[i]);
                 _amplitudes[i] = Random.value * amp;
-                _amplitudes2[i] = Random.value * amp * _reverseWaveWeight;
+                _amplitudes2[i] = Random.value * amp * ReverseWaveWeight;
             }
         }
 
@@ -499,7 +527,13 @@ namespace Crest
             }
         }
 
-        protected override void DestroySharedResources() {}
+        protected override void DestroySharedResources()
+        {
+            if (s_SwellSpectrum != null)
+            {
+                Helpers.Destroy(s_SwellSpectrum);
+            }
+        }
 
 #if UNITY_EDITOR
         void OnGUI()
@@ -510,5 +544,22 @@ namespace Crest
             }
         }
 #endif
+    }
+
+    public partial class ShapeGerstner : ISerializationCallbackReceiver
+    {
+        public void OnBeforeSerialize()
+        {
+
+        }
+
+        public void OnAfterDeserialize()
+        {
+            if (_version == 0)
+            {
+                _overrideGlobalWindDirection = true;
+                _version = 1;
+            }
+        }
     }
 }

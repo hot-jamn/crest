@@ -18,7 +18,7 @@ namespace Crest
     {
         public override string SimName => "Shadow";
         protected override GraphicsFormat RequestedTextureFormat => GraphicsFormat.R8G8_UNorm;
-        protected override bool NeedToReadWriteTextureData => true;
+        protected override bool NeedToReadWriteTextureData => TextureArrayHelpers.s_UseLegacyClear;
         static Texture2DArray s_nullTexture => TextureArrayHelpers.BlackTextureArray;
         protected override Texture2DArray NullTexture => s_nullTexture;
         public override int BufferCount => 2;
@@ -503,7 +503,7 @@ namespace Crest
 
                     LodDataMgrSeaFloorDepth.Bind(_renderMaterial[lodIdx]);
 
-                    Helpers.Blit(buffer, new RenderTargetIdentifier(_targets.Current, 0, CubemapFace.Unknown, lodIdx), _renderMaterial[lodIdx].material, -1);
+                    Helpers.Blit(buffer, _targets.Current, _renderMaterial[lodIdx].material, depthSlice: lodIdx);
                 }
 
                 // Process registered inputs.

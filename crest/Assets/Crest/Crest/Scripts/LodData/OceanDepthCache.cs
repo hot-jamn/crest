@@ -4,10 +4,7 @@
 
 using System;
 using UnityEngine;
-
-#if UNITY_EDITOR
 using UnityEditor;
-#endif
 
 namespace Crest
 {
@@ -58,17 +55,31 @@ namespace Crest
         [Tooltip("The resolution of the cached depth - lower will be more efficient.")]
         public int _resolution = 512;
 
+        [Tooltip("The far clip plane for the depth capture.")]
+        public float _cameraFarClipPlane = 10000f;
+
         // A big hill will still want to write its height into the depth texture
-        [Tooltip("The 'near plane' for the depth cache camera (top down)."), SerializeField]
-        float _cameraMaxTerrainHeight = 100f;
+        [Tooltip("The 'near plane' for the depth cache camera (top down).")]
+        public float _cameraMaxTerrainHeight = 100f;
+
+#if UNITY_2022_2_OR_NEWER
+        [Tooltip("Overrides the pixel error value for terrains. Best at zero (highest precision) unless using real-time cache."), SerializeField]
+        float _terrainPixelErrorOverride = 0f;
+#endif
+
+        [Tooltip("Overrides the LOD bias. Best at infinity (highest quality) unless using real-time cache."), SerializeField]
+        float _lodBiasOverride = Mathf.Infinity;
+
+        [Tooltip("Overrides the maximum LOD level. Best at zero (highest quality) unless using real-time cache."), SerializeField]
+        int _maximumLodLevelOverride = 0;
 
         [Tooltip("Will render into the cache every frame. Intended for debugging, will generate garbage."), SerializeField]
 #pragma warning disable 414
         bool _forceAlwaysUpdateDebug = false;
-#pragma warning restore 414
 
         [Tooltip("Hides the depth cache camera, for cleanliness. Disable to make it visible in the Hierarchy."), SerializeField]
         bool _hideDepthCacheCam = true;
+#pragma warning restore 414
 
         [Tooltip("Baked depth cache. Baking button available in play mode."), SerializeField]
 #pragma warning disable 649
@@ -125,6 +136,22 @@ namespace Crest
             }
         }
 
+        void OnEnable()
+        {
+            if (_drawCacheQuad != null) _drawCacheQuad.SetActive(true);
+        }
+
+        void OnDisable()
+        {
+            if (_drawCacheQuad != null) _drawCacheQuad.SetActive(false);
+        }
+
+        void OnDestroy()
+        {
+            if (_camDepthCache != null) Helpers.Destroy(_camDepthCache.gameObject);
+            if (_drawCacheQuad != null) Helpers.Destroy(_drawCacheQuad);
+        }
+
 #if UNITY_EDITOR
         void Update()
         {
@@ -134,6 +161,11 @@ namespace Crest
             if (_forceAlwaysUpdateDebug)
             {
                 PopulateCache(updateComponents: true);
+            }
+
+            if (_camDepthCache != null)
+            {
+                _camDepthCache.gameObject.hideFlags = _hideDepthCacheCam ? HideFlags.HideAndDontSave : HideFlags.DontSave;
             }
         }
 #endif
@@ -163,11 +195,7 @@ namespace Crest
             }
             else
             {
-#if UNITY_EDITOR_WIN
-                fmt = RenderTextureFormat.DefaultHDR;
-#else
-                fmt = RenderTextureFormat.RHalf;
-#endif
+                fmt = RenderTextureFormat.RFloat;
             }
 
             Debug.Assert(SystemInfo.SupportsRenderTextureFormat(fmt), "Crest: The graphics device does not support the render texture format " + fmt.ToString());
@@ -208,9 +236,7 @@ namespace Crest
                 _camDepthCache.transform.parent = transform;
                 _camDepthCache.transform.localEulerAngles = 90f * Vector3.right;
                 _camDepthCache.orthographic = true;
-                _camDepthCache.clearFlags = CameraClearFlags.SolidColor;
-                // Clear to 'very deep'
-                _camDepthCache.backgroundColor = Color.white * LodDataMgrSeaFloorDepth.k_DepthBaseline;
+                _camDepthCache.clearFlags = CameraClearFlags.Depth;
                 _camDepthCache.enabled = false;
                 _camDepthCache.allowMSAA = false;
                 _camDepthCache.allowDynamicResolution = false;
@@ -225,10 +251,10 @@ namespace Crest
             if (updateComponents || isDepthCacheCameraCreation)
             {
                 // Calculate here so it is always updated.
+                _camDepthCache.farClipPlane = _cameraFarClipPlane;
                 _camDepthCache.transform.position = CalculateCacheCameraPosition();
                 _camDepthCache.orthographicSize = CalculateCacheCameraOrthographicSize();
                 _camDepthCache.cullingMask = _layers;
-                _camDepthCache.gameObject.hideFlags = _hideDepthCacheCam ? HideFlags.HideAndDontSave : HideFlags.DontSave;
             }
 
             if (updateComponents && IsCacheTextureOutdated(_camDepthCache.targetTexture))
@@ -326,12 +352,37 @@ namespace Crest
                 QualitySettings.shadowDistance = 0f;
             }
 
-            // Render scene, saving depths in depth buffer.
-            _camDepthCache.Render();
+#if UNITY_2022_2_OR_NEWER
+            var oldTerrainOverrides = QualitySettings.terrainQualityOverrides;
+            var oldPixelError = QualitySettings.terrainPixelError;
+            QualitySettings.terrainQualityOverrides = TerrainQualityOverrides.PixelError;
+            QualitySettings.terrainPixelError = _terrainPixelErrorOverride;
+#endif
 
-            // Built-in only.
+            var oldLodBias = QualitySettings.lodBias;
+            QualitySettings.lodBias = _lodBiasOverride;
+            var oldMaximumLodLevel = QualitySettings.maximumLODLevel;
+            QualitySettings.maximumLODLevel = _maximumLodLevelOverride;
+
+            try
             {
-                QualitySettings.shadowDistance = oldShadowDistance;
+                // Render scene, saving depths in depth buffer.
+                _camDepthCache.Render();
+            }
+            finally
+            {
+#if UNITY_2022_2_OR_NEWER
+                QualitySettings.terrainQualityOverrides = oldTerrainOverrides;
+                QualitySettings.terrainPixelError = oldPixelError;
+#endif
+
+                QualitySettings.lodBias = oldLodBias;
+                QualitySettings.maximumLODLevel = oldMaximumLodLevel;
+
+                // Built-in only.
+                {
+                    QualitySettings.shadowDistance = oldShadowDistance;
+                }
             }
 
             if (_copyDepthMaterial == null)
@@ -377,7 +428,7 @@ namespace Crest
     [CustomEditor(typeof(OceanDepthCache))]
     public class OceanDepthCacheEditor : CustomBaseEditor
     {
-        readonly string[] _propertiesToExclude = new string[] { "m_Script", "_type", "_refreshMode", "_savedCache", "_layers", "_resolution", "_cameraMaxTerrainHeight", "_forceAlwaysUpdateDebug", "_relative" };
+        readonly string[] _propertiesToExclude = new string[] { "m_Script", "_type", "_refreshMode", "_savedCache", "_layers", "_resolution", "_cameraMaxTerrainHeight", "_cameraFarClipPlane", "_forceAlwaysUpdateDebug", "_terrainPixelErrorOverride", "_relative" };
 
         public override void OnInspectorGUI()
         {
@@ -414,6 +465,10 @@ namespace Crest
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("_layers"));
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("_resolution"));
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("_cameraMaxTerrainHeight"));
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("_cameraFarClipPlane"));
+#if UNITY_2022_2_OR_NEWER
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("_terrainPixelErrorOverride"));
+#endif
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("_forceAlwaysUpdateDebug"));
             }
             else
@@ -489,6 +544,27 @@ namespace Crest
                 ti.wrapMode = TextureWrapMode.Clamp;
                 // Values are slightly different with NPOT Scale applied.
                 ti.npotScale = TextureImporterNPOTScale.None;
+
+#if UNITY_2021_3_OR_NEWER
+                // Code will compile in earlier versions, but the importer does not support this
+                // configuration.
+
+                // Set single component.
+                {
+                    var settings = new TextureImporterSettings();
+                    ti.ReadTextureSettings(settings);
+                    settings.singleChannelComponent = TextureImporterSingleChannelComponent.Red;
+                    ti.SetTextureSettings(settings);
+                }
+
+                // Set format.
+                {
+                    var settings = ti.GetDefaultPlatformTextureSettings();
+                    settings.format = TextureImporterFormat.RFloat;
+                    ti.SetPlatformTextureSettings(settings);
+                }
+#endif
+
                 ti.SaveAndReimport();
 
                 Debug.Log("Crest: Cache saved to " + path, AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(path));
@@ -505,6 +581,7 @@ namespace Crest
             return _camDepthCache.orthographicSize != CalculateCacheCameraOrthographicSize() ||
                 _camDepthCache.transform.position != CalculateCacheCameraPosition() ||
                 IsCacheTextureOutdated(_camDepthCache.targetTexture) ||
+                _camDepthCache.farClipPlane != _cameraFarClipPlane ||
                 IsCacheTextureOutdated(_cacheTexture);
         }
 

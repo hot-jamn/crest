@@ -9,6 +9,10 @@ using UnityEngine.Rendering;
 
 namespace Crest
 {
+#if !UNITY_2023_2_OR_NEWER
+    using GraphicsFormatUsage = UnityEngine.Experimental.Rendering.FormatUsage;
+#endif
+
     /// <summary>
     /// Circular buffer to store a multiple sets of data
     /// </summary>
@@ -78,6 +82,14 @@ namespace Crest
 
         // NOTE: This is a temporary solution to keywords having prefixes downstream.
         internal static readonly string MATERIAL_KEYWORD_PREFIX = "";
+
+        static readonly GraphicsFormatUsage s_GraphicsFormatUsage =
+            // Ensures a non compressed format is returned.
+            GraphicsFormatUsage.LoadStore |
+            // All these textures are sampled at some point.
+            GraphicsFormatUsage.Sample |
+            // Always use linear filtering.
+            GraphicsFormatUsage.Linear;
 
         protected abstract int GetParamIdSampler(bool sourceLod = false);
 
@@ -154,13 +166,7 @@ namespace Crest
         protected virtual void InitData()
         {
             // Find a compatible texture format.
-            var formatUsage = NeedToReadWriteTextureData ? FormatUsage.LoadStore : FormatUsage.Sample;
-            CompatibleTextureFormat = SystemInfo.GetCompatibleFormat(RequestedTextureFormat, formatUsage);
-            if (CompatibleTextureFormat != RequestedTextureFormat)
-            {
-                Debug.Log($"Crest: Using render texture format {CompatibleTextureFormat} instead of {RequestedTextureFormat}");
-            }
-            Debug.Assert(CompatibleTextureFormat != GraphicsFormat.None, $"Crest: The graphics device does not support the render texture format {RequestedTextureFormat}");
+            CompatibleTextureFormat = Helpers.GetCompatibleTextureFormat(RequestedTextureFormat, s_GraphicsFormatUsage, NeedToReadWriteTextureData);
 
             Debug.Assert(OceanRenderer.Instance.CurrentLodCount <= MAX_LOD_COUNT);
 

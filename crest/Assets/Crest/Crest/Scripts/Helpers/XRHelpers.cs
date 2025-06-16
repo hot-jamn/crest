@@ -57,8 +57,8 @@ namespace Crest
             get
             {
 #if _XR_ENABLED
-                // TODO: What about multiview?
-                return IsRunning && XRSettings.stereoRenderingMode == XRSettings.StereoRenderingMode.SinglePassInstanced;
+                return IsRunning && (XRSettings.stereoRenderingMode == XRSettings.StereoRenderingMode.SinglePassInstanced ||
+                    XRSettings.stereoRenderingMode == XRSettings.StereoRenderingMode.SinglePassMultiview);
 #else
                 return false;
 #endif
@@ -136,7 +136,7 @@ namespace Crest
         public static void Update(Camera camera)
         {
 #if _XR_ENABLED
-            SubsystemManager.GetInstances(_displayList);
+            SubsystemManager.GetSubsystems(_displayList);
 #endif
 
             if (!camera.stereoEnabled || !IsSinglePass)

@@ -23,13 +23,20 @@ namespace Crest
 
         public const string k_HelpURL = Internal.Constants.HELP_URL_BASE_USER + "waves.html" + Internal.Constants.HELP_URL_RP + "#animated-waves-settings";
 
+        [Tooltip("PREVIEW: Set this to 2 to improve wave quality. In some cases like flowing rivers this can make a substantial difference to visual stability."
+            + "\n\nWe recommend doubling the Lod Data Resolution on the OceanRenderer component to preserve detail after making this change, but note that this will "
+            + "consume 4x more video memory until we are able to optimise data usage further, so apply this change with caution.")]
+        [SerializeField, Range(1f, 4f)]
+        float _waveResolutionMultiplier = 1f;
+        public float WaveResolutionMultiplier => Mathf.Max(1f, _waveResolutionMultiplier);
+
         [Tooltip("How much waves are dampened in shallow water."), SerializeField, Range(0f, 1f)]
         float _attenuationInShallows = 0.95f;
         public float AttenuationInShallows => _attenuationInShallows;
 
         [Tooltip("Any water deeper than this will receive full wave strength. The lower the value, the less effective the depth cache will be at attenuating very large waves. Set to the maximum value (1,000) to disable.")]
-        [SerializeField, Range(1f, LodDataMgrSeaFloorDepth.k_DepthBaseline)]
-        float _shallowsMaxDepth = LodDataMgrSeaFloorDepth.k_DepthBaseline;
+        [SerializeField, Range(1f, 1000f)]
+        float _shallowsMaxDepth = 1000f;
         public float MaximumAttenuationDepth => _shallowsMaxDepth;
 
         public enum CollisionSources
@@ -82,7 +89,7 @@ namespace Crest
                     result = new CollProviderNull();
                     break;
                 case CollisionSources.GerstnerWavesCPU:
-                    result = FindObjectOfType<ShapeGerstnerBatched>();
+                    result = Helpers.FindFirstObjectByType<ShapeGerstnerBatched>();
                     break;
                 case CollisionSources.ComputeShaderQueries:
                     if (!OceanRenderer.RunningWithoutGPU)
@@ -157,11 +164,11 @@ namespace Crest
 #if CREST_UNITY_MATHEMATICS
                 if (_bakedFFTData != null)
                 {
-                    if (!Mathf.Approximately(_bakedFFTData._parameters._windSpeed * 3.6f, ocean._globalWindSpeed))
+                    if (!Mathf.Approximately(_bakedFFTData._parameters._windSpeed * 3.6f, ocean.WindSpeedKPH))
                     {
                         showMessage
                         (
-                            $"Wind speed on ocean component {ocean._globalWindSpeed} does not match wind speed of baked FFT data {_bakedFFTData._parameters._windSpeed * 3.6f}, collision shape may not match visual surface.",
+                            $"Wind speed on ocean component {ocean.WindSpeedKPH} does not match wind speed of baked FFT data {_bakedFFTData._parameters._windSpeed * 3.6f}, collision shape may not match visual surface.",
                             $"Set global wind speed on ocean component to {_bakedFFTData._parameters._windSpeed * 3.6f}.",
                             ValidatedHelper.MessageType.Warning, ocean,
                             FixOceanWindSpeed
@@ -211,6 +218,12 @@ namespace Crest
                 && OceanRenderer.Instance._simSettingsAnimatedWaves != null
                 && OceanRenderer.Instance._simSettingsAnimatedWaves._bakedFFTData != null)
             {
+                if (OceanRenderer.Instance._globalWindZone != null)
+                {
+                    Debug.LogError($"Crest: Cannot change wind as using wind zone (update the wind zone). Wind zones are generally not supported when baking waves.");
+                    return;
+                }
+
                 Undo.RecordObject(OceanRenderer.Instance, "Set global wind speed to match baked data");
                 OceanRenderer.Instance._globalWindSpeed = OceanRenderer.Instance._simSettingsAnimatedWaves._bakedFFTData._parameters._windSpeed * 3.6f;
                 EditorUtility.SetDirty(OceanRenderer.Instance);

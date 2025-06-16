@@ -50,7 +50,7 @@ namespace WaveHarmonic
 	const
 #endif
 			{
-				return _texture.Sample(_sampler, uv);
+				return SAMPLE_TEXTURE2D(_texture, _sampler, uv);
 			}
 
 			half4 SampleLevel(float2 uv, float lod)
@@ -58,7 +58,7 @@ namespace WaveHarmonic
 	const
 #endif
 			{
-				return _texture.SampleLevel(_sampler, uv, lod);
+				return SAMPLE_TEXTURE2D_LOD(_texture, _sampler, uv, lod);
 			}
 
 #if CREST_FLOATING_ORIGIN
@@ -68,7 +68,7 @@ namespace WaveHarmonic
 #endif
 			{
 				// Safely assumes a square texture.
-				return _CrestFloatingOriginOffset.xz % (_scale * _size * _texel);
+				return _CrestFloatingOriginOffset.xz % _scale;
 			}
 
 			float2 FloatingOriginOffset(const CascadeParams i_cascadeData)
@@ -77,7 +77,7 @@ namespace WaveHarmonic
 #endif
 			{
 				// Safely assumes a square texture.
-				return _CrestFloatingOriginOffset.xz % (_scale * _size * i_cascadeData._texelWidth);
+				return _CrestFloatingOriginOffset.xz % (_scale * i_cascadeData._scale);
 			}
 #endif // CREST_FLOATING_ORIGIN
 		};

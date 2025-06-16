@@ -3,10 +3,7 @@
 // This file is subject to the MIT License as seen in the root of this folder structure (LICENSE)
 
 using UnityEngine;
-
-#if UNITY_EDITOR
 using UnityEditor;
-#endif
 
 namespace Crest
 {
@@ -97,11 +94,12 @@ namespace Crest
             }
         }
 
-#if UNITY_EDITOR
 #pragma warning disable 414
         [SerializeField, HideInInspector]
         bool _showAdvancedControls = false;
 #pragma warning restore 414
+
+#if UNITY_EDITOR
 
         public enum SpectrumModel
         {
@@ -184,7 +182,9 @@ namespace Crest
             power = Mathf.Pow(10f, power);
 
             // Empirical wind influence based on alpha-beta spectrum that underlies empirical spectra
-            var gravity = _gravityScale * Mathf.Abs(Physics.gravity.y);
+            var gravity = _gravityScale * OceanRenderer.Instance.Gravity;
+            // Zero gravity will cause NaNs, and they have always been flat.
+            if (gravity <= 0f) return 0f;
             var B = 1.291f;
             var wm = 0.87f * gravity / windSpeed;
             DeepDispersion(2f * Mathf.PI / wavelength, gravity, out var w);
@@ -208,7 +208,7 @@ namespace Crest
         {
             // wave speed of deep sea ocean waves: https://en.wikipedia.org/wiki/Wind_wave
             // https://en.wikipedia.org/wiki/Dispersion_(water_waves)#Wave_propagation_and_dispersion
-            var g = Mathf.Abs(Physics.gravity.y) * gravityMultiplier;
+            var g = OceanRenderer.Instance.Gravity * gravityMultiplier;
             var k = 2f * Mathf.PI / wavelength;
             //float h = max(depth, 0.01);
             //float cp = sqrt(abs(tanh_clamped(h * k)) * g / k);
@@ -348,7 +348,7 @@ namespace Crest
 
             base.OnInspectorGUI();
 
-            bool beingEditedOnGerstnerComponent = _hostComponentType == typeof(ShapeGerstner);
+            bool beingEditedOnGerstnerComponent = _hostComponentType == typeof(ShapeGerstner) || _hostComponentType == typeof(ShapeGerstnerBatched);
 
             bool showAdvancedControls = false;
             if (beingEditedOnGerstnerComponent)
@@ -425,7 +425,7 @@ namespace Crest
                     EditorGUILayout.LabelField(string.Format("{0}", smallWL), GUILayout.Width(50f));
                     // Disable slider if authoring with model.
                     GUI.enabled = !canEditSpectrum && !spDisabled_i.boolValue;
-                    powerValue = GUILayout.HorizontalSlider(powerValue, OceanWaveSpectrum.MIN_POWER_LOG, OceanWaveSpectrum.MAX_POWER_LOG);
+                    powerValue = EditorGUILayout.Slider(powerValue, OceanWaveSpectrum.MIN_POWER_LOG, OceanWaveSpectrum.MAX_POWER_LOG);
                     GUI.enabled = true;
                     EditorGUILayout.EndHorizontal();
                     // This will create a tooltip for slider.

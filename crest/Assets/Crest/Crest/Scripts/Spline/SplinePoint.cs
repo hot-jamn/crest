@@ -12,9 +12,30 @@ namespace Crest.Spline
         Vector2 GetData();
     }
 
+    public abstract class SplinePointDataBase : CustomMonoBehaviour, ISplinePointCustomData
+    {
+        public abstract Vector2 GetData();
+
+        public void NotifyOfSplineChange()
+        {
+            if (transform.parent == null)
+            {
+                return;
+            }
+
+#if UNITY_EDITOR
+            foreach (var receiver in transform.parent.GetComponents<IReceiveSplineChangeMessages>())
+            {
+                receiver.OnSplineChange();
+            }
+#endif
+        }
+    }
+
     /// <summary>
     /// Spline point, intended to be child of Spline object
     /// </summary>
+    [ExecuteDuringEditMode]
     [AddComponentMenu(Internal.Constants.MENU_PREFIX_SPLINE + "Spline Point")]
     public class SplinePoint : CustomMonoBehaviour
     {
@@ -27,7 +48,56 @@ namespace Crest.Spline
         int _version = 0;
 #pragma warning restore 414
 
+        Transform _parent;
+
 #if UNITY_EDITOR
+        void Update()
+        {
+            _parent = transform.parent;
+
+            if (!transform.hasChanged)
+            {
+                return;
+            }
+
+            NotifyOnChange();
+
+            transform.hasChanged = false;
+        }
+
+        void NotifyOnChange()
+        {
+            // When called in OnDestroy, transform.parent is null.
+            // When called during an undo operation, cannot use transform or exception.
+            var parent =
+#if UNITY_2022_3_OR_NEWER
+                Undo.isProcessing ? _parent :
+#endif
+                transform.parent == null
+                ? _parent
+                : transform.parent;
+
+            if (parent == null)
+            {
+                return;
+            }
+
+            foreach (var receiver in parent.GetComponents<IReceiveSplineChangeMessages>())
+            {
+                receiver.OnSplineChange();
+            }
+        }
+
+        void OnDisable()
+        {
+            NotifyOnChange();
+        }
+
+        void OnDestroy()
+        {
+            NotifyOnChange();
+        }
+
         void OnDrawGizmos()
         {
             // We could not get gizmos or handles to work well when 3D Icons is enabled. problems included
@@ -60,10 +130,21 @@ namespace Crest.Spline
 #endif
     }
 
+    public interface IReceiveSplineChangeMessages
+    {
+        void OnSplineChange();
+    }
+
 #if UNITY_EDITOR
     public interface IReceiveSplinePointOnDrawGizmosSelectedMessages
     {
         void OnSplinePointDrawGizmosSelected(SplinePoint point);
+    }
+
+    [CustomEditor(typeof(SplinePointDataBase), editorForChildClasses: true)]
+    public class SplinePointBaseEditor : CustomBaseEditor
+    {
+
     }
 
     [CustomEditor(typeof(SplinePoint))]

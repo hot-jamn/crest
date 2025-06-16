@@ -5,10 +5,7 @@
 using UnityEngine;
 using UnityEngine.Rendering;
 using System.Collections.Generic;
-
-#if UNITY_EDITOR
 using UnityEditor;
-#endif
 
 namespace Crest
 {
@@ -19,7 +16,7 @@ namespace Crest
     [ExecuteDuringEditMode(ExecuteDuringEditModeAttribute.Include.None)]
     [AddComponentMenu(Internal.Constants.MENU_PREFIX_SCRIPTS + "Shape Gerstner Batched")]
     [HelpURL(Internal.Constants.HELP_URL_BASE_USER + "waves.html" + Internal.Constants.HELP_URL_RP)]
-    public partial class ShapeGerstnerBatched : CustomMonoBehaviour, ICollProvider, IFloatingOrigin
+    public partial class ShapeGerstnerBatched : CustomMonoBehaviour, ICollProvider, IShiftingOrigin
     {
         /// <summary>
         /// The version of this asset. Can be used to migrate across versions. This value should
@@ -290,7 +287,7 @@ namespace Crest
             }
 
             // Calc wind speed in m/s
-            var windSpeed = OceanRenderer.Instance._globalWindSpeed / 3.6f;
+            var windSpeed = OceanRenderer.Instance.WindSpeedKPH / 3.6f;
 
             for (int i = 0; i < _wavelengths.Length; i++)
             {

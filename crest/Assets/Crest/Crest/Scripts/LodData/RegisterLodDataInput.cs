@@ -7,10 +7,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
 using Crest.Spline;
-
-#if UNITY_EDITOR
 using UnityEditor;
-#endif
 
 namespace Crest
 {
@@ -44,7 +41,7 @@ namespace Crest
     [ExecuteDuringEditMode]
     public abstract partial class RegisterLodDataInputBase : CustomMonoBehaviour, ILodDataInput
     {
-#if UNITY_EDITOR
+#pragma warning disable 414
         [SerializeField, Tooltip("Check that the shader applied to this object matches the input type (so e.g. an Animated Waves input object has an Animated Waves input shader.")]
         [Predicated(typeof(Renderer)), DecoratedField]
         bool _checkShaderName = true;
@@ -52,7 +49,7 @@ namespace Crest
         [SerializeField, Tooltip("Check that the shader applied to this object has only a single pass as only the first pass is executed for most inputs.")]
         [Predicated(typeof(Renderer)), DecoratedField]
         bool _checkShaderPasses = true;
-#endif
+#pragma warning restore 414
 
         public const string MENU_PREFIX = Internal.Constants.MENU_SCRIPTS + "LOD Inputs/Crest Register ";
 
@@ -62,6 +59,7 @@ namespace Crest
 
         public static int sp_Weight = Shader.PropertyToID("_Weight");
         public static int sp_DisplacementAtInputPosition = Shader.PropertyToID("_DisplacementAtInputPosition");
+        public static int sp_FeatherWidth = Shader.PropertyToID("_FeatherWidth");
 
         // By default do not follow horizontal motion of waves. This means that the ocean input will appear on the surface at its XZ location, instead
         // of moving horizontally with the waves.
@@ -308,6 +306,7 @@ namespace Crest
     public abstract partial class RegisterLodDataInputWithSplineSupport<LodDataType, SplinePointCustomData>
         : RegisterLodDataInput<LodDataType>
         , ISplinePointCustomDataSetup
+        , IReceiveSplineChangeMessages
 #if UNITY_EDITOR
         , IReceiveSplinePointOnDrawGizmosSelectedMessages
 #endif
@@ -315,12 +314,22 @@ namespace Crest
         where SplinePointCustomData : CustomMonoBehaviour, ISplinePointCustomData
     {
         [Header("Spline settings")]
-        [SerializeField, Predicated(typeof(Spline.Spline)), DecoratedField]
+
+        [Tooltip("Feathers along the spline. To feather the start/end, use spline point data. Not applicable to height input.")]
+        [Predicated(typeof(Spline.Spline))]
+        [DecoratedField, SerializeField]
+        float _featherWidth;
+
+        [SerializeField, Predicated(typeof(Spline.Spline)), DecoratedField, OnChange(nameof(OnSplineChange))]
         bool _overrideSplineSettings = false;
-        [SerializeField, Predicated("_overrideSplineSettings", typeof(Spline.Spline)), DecoratedField]
+        [SerializeField, Predicated("_overrideSplineSettings", typeof(Spline.Spline)), DecoratedField, OnChange(nameof(OnSplineChange))]
         float _radius = 20f;
-        [SerializeField, Predicated("_overrideSplineSettings", typeof(Spline.Spline)), Delayed]
+        [SerializeField, Predicated("_overrideSplineSettings", typeof(Spline.Spline)), Delayed, OnChange(nameof(OnSplineChange))]
         int _subdivisions = 1;
+
+        public bool OverrideSplineSettings { get => _overrideSplineSettings; set => _overrideSplineSettings = value; }
+        public float Radius { get => _radius; set => _radius = value; }
+        public int Subdivisions { get => _subdivisions; set => _subdivisions = value; }
 
         protected Material _splineMaterial;
         Spline.Spline _spline;
@@ -352,8 +361,14 @@ namespace Crest
 
             var radius = _overrideSplineSettings ? _radius : _spline.Radius;
             var subdivs = _overrideSplineSettings ? _subdivisions : _spline.Subdivisions;
-            ShapeGerstnerSplineHandling.GenerateMeshFromSpline<SplinePointCustomData>(_spline, transform, subdivs,
+            var success = ShapeGerstnerSplineHandling.GenerateMeshFromSpline<SplinePointCustomData>(_spline, transform, subdivs,
                 radius, DefaultCustomData, ref _splineMesh, out _splinePointHeightMin, out _splinePointHeightMax, ref _splineBoundingPoints);
+
+            // If failed then destroy mesh.
+            if (!success)
+            {
+                _splineMesh = null;
+            }
 
             if (_splineMaterial == null)
             {
@@ -374,6 +389,7 @@ namespace Crest
             {
                 buf.SetGlobalFloat(sp_Weight, weight);
                 buf.SetGlobalVector(sp_DisplacementAtInputPosition, Vector3.zero);
+                buf.SetGlobalFloat(sp_FeatherWidth, _featherWidth);
                 buf.DrawMesh(_splineMesh, transform.localToWorldMatrix, _splineMaterial);
             }
             else
@@ -400,6 +416,11 @@ namespace Crest
             return true;
         }
 
+        public void OnSplineChange()
+        {
+            CreateOrUpdateSplineMesh();
+        }
+
 #if UNITY_EDITOR
         protected override void OnDrawGizmosSelected()
         {
@@ -409,19 +430,12 @@ namespace Crest
                 return;
             }
 
-            // Restrict this call as it is costly.
-            if (Selection.activeGameObject == gameObject)
-            {
-                CreateOrUpdateSplineMesh();
-            }
-
             Gizmos.color = GizmoColor;
             Gizmos.DrawWireMesh(_splineMesh, transform.position, transform.rotation, transform.lossyScale);
         }
 
         public void OnSplinePointDrawGizmosSelected(SplinePoint point)
         {
-            CreateOrUpdateSplineMesh();
             OnDrawGizmosSelected();
         }
 #endif // UNITY_EDITOR

@@ -4,10 +4,7 @@
 
 using UnityEngine;
 using UnityEngine.Rendering;
-
-#if UNITY_EDITOR
 using UnityEditor;
-#endif
 
 namespace Crest
 {
@@ -23,14 +20,19 @@ namespace Crest
         /// </summary>
         [SerializeField, HideInInspector]
 #pragma warning disable 414
-        int _version = 0;
+        int _version = 1;
 #pragma warning restore 414
 
         [Header("Wave Conditions")]
+
+        [Tooltip("When true, uses the wind turbulence on this component rather than the wind turbulence from the Ocean Renderer component.")]
+        public bool _overrideGlobalWindTurbulence;
+        public float WindTurbulence => _overrideGlobalWindTurbulence ? _windTurbulence : OceanRenderer.Instance.WindTurbulence;
+
         [Tooltip("Impacts how aligned waves are with wind.")]
         [Range(0, 1)]
         public float _windTurbulence = 0.145f;
-        public float WindDirRadForFFT => _meshForDrawingWaves != null ? 0f : _waveDirectionHeadingAngle * Mathf.Deg2Rad;
+        public float WindDirRadForFFT => _meshForDrawingWaves != null ? 0f : WaveDirectionHeadingAngle * Mathf.Deg2Rad;
 
         [Header("Culling")]
         [Tooltip("Maximum amount surface will be displaced vertically from sea level. Increase this if gaps appear at bottom of screen."), SerializeField]
@@ -99,17 +101,17 @@ namespace Crest
             float loopPeriod = LoopPeriod;
 
             // Don't create tons of generators when values are varying. Notify so that existing generators may be adapted.
-            if (_windTurbulenceOld != _windTurbulence || _windDirRadOld != windDirRad || _windSpeedOld != windSpeedMPS || _spectrumOld != _spectrum)
+            if (_windTurbulenceOld != WindTurbulence || _windDirRadOld != windDirRad || _windSpeedOld != windSpeedMPS || _spectrumOld != _activeSpectrum)
             {
-                FFTCompute.OnGenerationDataUpdated(_resolution, loopPeriod, _windTurbulenceOld, _windDirRadOld, _windSpeedOld, _spectrumOld, _windTurbulence, windDirRad, windSpeedMPS, _spectrum);
+                FFTCompute.OnGenerationDataUpdated(_resolution, loopPeriod, _windTurbulenceOld, _windDirRadOld, _windSpeedOld, _spectrumOld, WindTurbulence, windDirRad, windSpeedMPS, _activeSpectrum);
             }
 
-            var waveData = FFTCompute.GenerateDisplacements(buf, _resolution, loopPeriod, _windTurbulence, windDirRad, windSpeedMPS, OceanRenderer.Instance.CurrentTime, _activeSpectrum, UpdateDataEachFrame);
+            var waveData = FFTCompute.GenerateDisplacements(buf, _resolution, loopPeriod, WindTurbulence, windDirRad, windSpeedMPS, OceanRenderer.Instance.CurrentTime, _activeSpectrum, UpdateDataEachFrame);
 
-            _windTurbulenceOld = _windTurbulence;
+            _windTurbulenceOld = WindTurbulence;
             _windDirRadOld = windDirRad;
             _windSpeedOld = windSpeedMPS;
-            _spectrumOld = _spectrum;
+            _spectrumOld = _activeSpectrum;
             _matGenerateWaves.SetTexture(sp_WaveBuffer, waveData);
         }
 
@@ -135,10 +137,27 @@ namespace Crest
         {
             if (_debug._drawSlicesInEditor)
             {
-                FFTCompute.OnGUI(_resolution, LoopPeriod, _windTurbulence, WindDirRadForFFT, WindSpeed, _activeSpectrum);
+                FFTCompute.OnGUI(_resolution, LoopPeriod, WindTurbulence, WindDirRadForFFT, WindSpeed, _activeSpectrum);
             }
         }
 #endif
+    }
+
+    public partial class ShapeFFT : ISerializationCallbackReceiver
+    {
+        public void OnBeforeSerialize()
+        {
+
+        }
+
+        public void OnAfterDeserialize()
+        {
+            if (_version == 0)
+            {
+                _overrideGlobalWindDirection = true;
+                _version = 1;
+            }
+        }
     }
 
 #if UNITY_EDITOR

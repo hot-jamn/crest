@@ -96,7 +96,7 @@ void ApplyCaustics
 		float surfacePosScale = 1.37;
 
 #if CREST_FLOATING_ORIGIN
-		// Apply tiled floating origin offset. Always needed.
+		// Apply tiled shifting origin offset. Always needed.
 		surfacePosXZ -= i_causticsTexture.FloatingOriginOffset();
 		// Scale was causing popping.
 		surfacePosScale = 1.0;
@@ -121,7 +121,7 @@ void ApplyCaustics
 		float2 surfacePosXZ = i_scenePos.xz;
 
 #if CREST_FLOATING_ORIGIN
-		// Apply tiled floating origin offset. Always needed.
+		// Apply tiled shifting origin offset. Always needed.
 		surfacePosXZ -= i_distortionTexture.FloatingOriginOffset();
 #endif
 
@@ -171,6 +171,9 @@ half3 OceanEmission
 	in const half3 i_bubbleCol,
 	in const bool i_underwater,
 	in const half3 i_scatterCol,
+#if CREST_WATER_VOLUME
+	in const bool i_backface,
+#endif
 	in const CascadeParams cascadeData0,
 	in const CascadeParams cascadeData1
 )
@@ -189,43 +192,71 @@ half3 OceanEmission
 	half3 alpha = 0.;
 	float depthFogDistance;
 
+	half2 refractOffset = _RefractionStrength * i_n_pixel.xz;
+	if (!i_underwater)
+	{
+		refractOffset *= min(1.0, 0.5 * (i_sceneZ - i_pixelZ)) / i_sceneZ;
+	}
+
+	const half2 uvDepthRefract = i_uvDepth + refractOffset;
+	float rawDepth = CREST_SAMPLE_SCENE_DEPTH_X(uvDepthRefract);
+
+	bool caustics = true;
+#if CREST_WATER_VOLUME_HAS_BACKFACE
+	bool backface = ApplyVolumeToOceanSurfaceRefractions(uvDepthRefract, i_rawDepth, i_underwater, rawDepth, caustics);
+#endif
+
 	// Depth fog & caustics - only if view ray starts from above water
 	if (!i_underwater)
 	{
-		const half2 refractOffset = _RefractionStrength * i_n_pixel.xz * min(1.0, 0.5*(i_sceneZ - i_pixelZ)) / i_sceneZ;
-		const float rawDepth = CREST_SAMPLE_SCENE_DEPTH_X(i_uvDepth + refractOffset);
 		half2 uvBackgroundRefract;
+		float sceneZ = i_sceneZ;
 
 		// Compute depth fog alpha based on refracted position if it landed on an underwater surface, or on unrefracted depth otherwise
-#if UNITY_REVERSED_Z
 		if (rawDepth < i_rawPixelZ)
-#else
-		if (rawDepth > i_rawPixelZ)
-#endif
 		{
 			uvBackgroundRefract = uvBackground + refractOffset;
-			depthFogDistance = CrestLinearEyeDepth(CREST_MULTISAMPLE_SCENE_DEPTH(uvBackgroundRefract, rawDepth)) - i_pixelZ;
+#if CREST_WATER_VOLUME_HAS_BACKFACE
+			if (!backface)
+#endif
+			{
+				rawDepth = CREST_MULTISAMPLE_SCENE_DEPTH(uvBackgroundRefract, rawDepth);
+			}
+			sceneZ = CrestLinearEyeDepth(rawDepth);
+			depthFogDistance = sceneZ - i_pixelZ;
 		}
 		else
 		{
-			// It seems that when MSAA is enabled this can sometimes be negative
-			depthFogDistance = max(CrestLinearEyeDepth(CREST_MULTISAMPLE_SCENE_DEPTH(uvBackground, i_rawDepth)) - i_pixelZ, 0.0);
-
 			// We have refracted onto a surface in front of the water. Cancel the refraction offset.
 			uvBackgroundRefract = uvBackground;
+			rawDepth = i_rawDepth;
+#if CREST_WATER_VOLUME_HAS_BACKFACE
+			if (!i_backface)
+#endif
+			{
+				rawDepth = CREST_MULTISAMPLE_SCENE_DEPTH(uvBackground, rawDepth);
+			}
+			sceneZ = CrestLinearEyeDepth(rawDepth);
+			// It seems that when MSAA is enabled this can sometimes be negative
+			depthFogDistance = max(sceneZ - i_pixelZ, 0.0);
 		}
 
 		sceneColour = UNITY_SAMPLE_SCREENSPACE_TEXTURE(_BackgroundTexture, uvBackgroundRefract).rgb;
 #if _CAUSTICS_ON
-		float3 scenePos = _WorldSpaceCameraPos - i_view * i_sceneZ / dot(unity_CameraToWorld._m02_m12_m22, -i_view);
-		ApplyCaustics(_CausticsTiledTexture, _CausticsDistortionTiledTexture, i_positionSS, scenePos, i_lightDir, i_sceneZ, i_underwater, sceneColour, _LD_SliceIndex + 1, cascadeData1);
+#if CREST_WATER_VOLUME_HAS_BACKFACE
+		if (caustics)
+#endif
+		{
+			float3 scenePos = _WorldSpaceCameraPos - i_view * sceneZ / dot(unity_CameraToWorld._m02_m12_m22, -i_view);
+			ApplyCaustics(_CausticsTiledTexture, _CausticsDistortionTiledTexture, uvBackgroundRefract * _ScreenParams.xy, scenePos, i_lightDir, sceneZ, i_underwater, sceneColour, _LD_SliceIndex + 1, cascadeData1);
+		}
 #endif
 		alpha = 1.0 - exp(-_DepthFogDensity.xyz * depthFogDistance);
 	}
 	else
 	{
-		half2 uvBackgroundRefractSky = uvBackground + _RefractionStrength * i_n_pixel.xz;
-		sceneColour = UNITY_SAMPLE_SCREENSPACE_TEXTURE(_BackgroundTexture, uvBackgroundRefractSky).rgb;
+		const half2 uvBackgroundRefract = rawDepth < i_rawPixelZ ? uvBackground + refractOffset : uvBackground;
+		sceneColour = UNITY_SAMPLE_SCREENSPACE_TEXTURE(_BackgroundTexture, uvBackgroundRefract).rgb;
 		depthFogDistance = i_pixelZ;
 		// keep alpha at 0 as UnderwaterReflection shader handles the blend
 		// appropriately when looking at water from below

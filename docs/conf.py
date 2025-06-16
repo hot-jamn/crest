@@ -22,7 +22,7 @@ project = "Crest"
 organization = "Wave Harmonic"
 author = f"{organization} & Contributors"
 copyright = f"2021, {author}"
-version = "4.17.3"
+version = "4.22.1"
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#confval-release
 release = version
 sponsor_link = "https://github.com/sponsors/wave-harmonic"
@@ -34,7 +34,7 @@ sponsor_link = "https://github.com/sponsors/wave-harmonic"
 # ones.
 extensions = [
     "sphinx_inline_tabs",
-    "sphinx_panels",
+    "sphinx_design",
     "sphinx_issues",
 
     # For using CONTRIBUTING.md.
@@ -70,6 +70,7 @@ exclude_patterns = [
     "extensions",
     "**/includes",
     "README.md",
+    "design-tabs.js", # We are using inline-tabs and this throws errors/warnings
 ]
 
 # https://github.com/readthedocs/readthedocs.org/issues/4603
@@ -129,13 +130,13 @@ html_static_path = ["_static", "../logo"]
 # These paths are either relative to html_static_path or fully qualified paths (eg. https://...).
 # Increment query parameter to invalidate the cache.
 html_css_files = [
-    'custom.css?v1.1.0',
+    'custom.css',
 ]
 
 html_js_files = [
     'https://cdnjs.cloudflare.com/ajax/libs/medium-zoom/1.0.6/medium-zoom.min.js',
     'https://p.trellocdn.com/embed.min.js',
-    'custom.js?v1.2.0',
+    'custom.js',
 ]
 
 # -- Options for PDF output --------------------------------------------------
@@ -189,17 +190,15 @@ rst_prolog = rst_prolog + """
 .. set:: RPMinVersion 10.10
 .. set:: UPMDocLinkBase \https://docs.unity3d.com/Packages
 .. set:: RPDocLinkBase \https://docs.unity3d.com/Packages/com.unity.render-pipelines.
-.. set:: UnityMinVersionShort 2020.3
-.. set:: UnityMinVersion {UnityMinVersionShort}.40
-.. set:: UnityDocsLinkBase https://docs.unity3d.com/{UnityMinVersionShort}/Documentation
-.. set:: UnityDocLink https://docs.unity3d.com/{UnityMinVersionShort}/Documentation/Manual
+.. set:: UnityMinVersion 2020.3
+.. set:: UnityDocsLinkBase https://docs.unity3d.com/{UnityMinVersion}/Documentation
+.. set:: UnityDocLink https://docs.unity3d.com/{UnityMinVersion}/Documentation/Manual
 .. set:: UnityDocScriptLink {UnityDocsLinkBase}/ScriptReference
 .. set:: UnityIssueLink https://issuetracker.unity3d.com/product/unity/issues/guid
 .. set:: AssetStoreLinkBase \https://assetstore.unity.com/packages/tools/particles-effects
 .. set:: DocLinkBase https://crest.readthedocs.io/en/{AssetVersion}
 .. set:: GitHubLink \https://github.com/wave-harmonic/crest
 .. set:: WikiLink \{GitHubLink}/wiki
-.. set:: RoadmapLink \https://trello.com/b/L7iejCPI
 
 .. set:: SGDocLink {UPMDocLinkBase}/com.unity.shadergraph@{RPMinVersion}/manual
 
@@ -242,6 +241,8 @@ rst_prolog = rst_prolog + """
 .. set:: GC :abbr:`GC (Garbage Collector)`
 .. set:: SSR :abbr:`SSR (Screen-Space Reflections)`
 .. set:: SSAO :abbr:`SSAO (Screen-Space Ambient Occlusion)`
+.. set:: SAO :abbr:`SSAO (Scalable Ambient Occlusion)`
+.. set:: STPP :abbr:`STPP (Spatial-Temporal Post-Processing)`
 
 .. set:: DWP2 :abbr:`DWP2 (Dynamic Water Physics 2)`
 

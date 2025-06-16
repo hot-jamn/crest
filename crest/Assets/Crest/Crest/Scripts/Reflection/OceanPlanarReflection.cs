@@ -77,8 +77,9 @@ namespace Crest
     /// <summary>
     /// Attach to a camera to generate a reflection texture which can be sampled in the ocean shader.
     /// </summary>
+    [ExecuteDuringEditMode]
     [AddComponentMenu(Internal.Constants.MENU_PREFIX_SCRIPTS + "Ocean Planar Reflections")]
-    public class OceanPlanarReflection : CustomMonoBehaviour
+    public partial class OceanPlanarReflection : CustomMonoBehaviour
     {
         /// <summary>
         /// The version of this asset. Can be used to migrate across versions. This value should
@@ -101,7 +102,9 @@ namespace Crest
         [SerializeField] bool _allowMSAA = false;           //allow MSAA on reflection camera
         [SerializeField] float _farClipPlane = 1000;             //far clip plane for reflection camera on all layers
         [SerializeField] bool _forceForwardRenderingPath = true;
-        [SerializeField] CameraClearFlags _clearFlags = CameraClearFlags.Color;
+
+        [Tooltip("The Color option will skip skybox rendering and fallback to global reflections (minor optimization), but any alpha shaders that do not write alpha will not appear in planar reflections (eg tree leaves). Use Skybox for best compatibility.")]
+        [SerializeField] CameraClearFlags _clearFlags = CameraClearFlags.Skybox;
 
         /// <summary>
         /// Refresh reflection every x frames(1-every frame)
@@ -118,6 +121,7 @@ namespace Crest
         Camera _camViewpoint;
         Skybox _camViewpointSkybox;
         Camera _camReflections;
+        public Camera ReflectionCamera => _camReflections;
         Skybox _camReflectionsSkybox;
 
         private long _lastRefreshOnFrame = -1;
@@ -125,14 +129,13 @@ namespace Crest
         const int CULL_DISTANCE_COUNT = 32;
         float[] _cullDistances = new float[CULL_DISTANCE_COUNT];
 
+#if UNITY_EDITOR
+        bool _isSceneCamera;
+        float _changeViewTimer;
+#endif
+
         private void Start()
         {
-            if (OceanRenderer.Instance == null)
-            {
-                enabled = false;
-                return;
-            }
-
             if (!TryGetComponent(out _camViewpoint))
             {
                 Debug.LogWarning("Crest: Disabling planar reflections as no camera found on gameobject to generate reflection from.", this);
@@ -151,21 +154,18 @@ namespace Crest
                 Debug.LogWarning("Crest: Planar reflections are not enabled on the current ocean material and will not be visible.", this);
             }
 #endif
+
+#if UNITY_EDITOR
+            // Otherwise will not work without entering/exiting play mode.
+            if (_camViewpoint.CompareTag("MainCamera"))
+            {
+                enabled = false;
+                enabled = true;
+            }
+#endif
         }
 
-        bool RequestRefresh(long frame)
-        {
-            if (_lastRefreshOnFrame <= 0 || RefreshPerFrames < 2)
-                return true; // Not refreshed before or refresh every frame, not check frame counter
-            return Math.Abs(_frameRefreshOffset) % RefreshPerFrames == frame % RefreshPerFrames;
-        }
-
-        void Refreshed(long currentframe)
-        {
-            _lastRefreshOnFrame = currentframe;
-        }
-
-        private void OnPreRender()
+        void LateUpdate()
         {
             if (!RequestRefresh(Time.renderedFrameCount))
                 return; // Skip if not need to refresh on this frame
@@ -175,6 +175,36 @@ namespace Crest
                 return;
             }
 
+#if UNITY_EDITOR
+            // Work in edit mode.
+            var editorCamera = OceanRenderer.Instance.ViewCamera;
+            if (_camViewpoint.CompareTag("MainCamera") && editorCamera != null && editorCamera.cameraType == CameraType.SceneView)
+            {
+                if (!editorCamera.TryGetComponent<OceanPlanarReflection>(out var editor))
+                {
+                    editor = editorCamera.gameObject.AddComponent<OceanPlanarReflection>();
+                    editor._isSceneCamera = true;
+                }
+
+                if (editor != null)
+                {
+                    editor._reflectionLayers = _reflectionLayers;
+                    editor._disableOcclusionCulling = _disableOcclusionCulling;
+                    editor._disablePixelLights = _disablePixelLights;
+                    editor._disableShadows = _disableShadows;
+                    editor._textureSize = _textureSize;
+                    editor._clipPlaneOffset = _clipPlaneOffset;
+                    editor._hdr = _hdr;
+                    editor._stencil = _stencil;
+                    editor._hideCameraGameobject = _hideCameraGameobject;
+                    editor._allowMSAA = _allowMSAA;
+                    editor._farClipPlane = _farClipPlane;
+                    editor._forceForwardRenderingPath = _forceForwardRenderingPath;
+                    editor._clearFlags = _clearFlags;
+                }
+            }
+#endif
+
             CreateWaterObjects(_camViewpoint);
 
             if (!_camReflections)
@@ -182,28 +212,46 @@ namespace Crest
                 return;
             }
 
+#if UNITY_EDITOR
+            // Only run one camera at a time.
+            if (_isSceneCamera)
+            {
+                if (Application.isPlaying)
+                {
+                    return;
+                }
+
+                // Fix "Screen position out of view frustum" when 2D view activated.
+                var sceneView = UnityEditor.SceneView.lastActiveSceneView;
+                if (sceneView != null && sceneView.in2DMode)
+                {
+                    return;
+                }
+            }
+            else if (!Application.isPlaying)
+            {
+                return;
+            }
+#endif
+
             // Find out the reflection plane: position and normal in world space
             Vector3 planePos = OceanRenderer.Instance.Root.position;
             Vector3 planeNormal = Vector3.up;
 
-            // Optionally disable pixel lights for reflection/refraction
-            int oldPixelLightCount = QualitySettings.pixelLightCount;
-            if (_disablePixelLights)
-            {
-                QualitySettings.pixelLightCount = 0;
-            }
-
-            // Optionally disable shadows for reflection/refraction
-            ShadowQuality oldShadowQuality = QualitySettings.shadows;
-            if (_disableShadows)
-            {
-                QualitySettings.shadows = ShadowQuality.Disable;
-            }
-
             UpdateCameraModes();
 
+            var offset = _clipPlaneOffset;
+            {
+                var viewpoint = _camViewpoint.transform;
+                if (offset == 0f && viewpoint.position.y == planePos.y)
+                {
+                    // Minor offset to prevent "Screen position out of view frustum". Could be BIRP only.
+                    offset = -0.00001f;
+                }
+            }
+
             // Reflect camera around reflection plane
-            float d = -Vector3.Dot(planeNormal, planePos) - _clipPlaneOffset;
+            float d = -Vector3.Dot(planeNormal, planePos) - offset;
             Vector4 reflectionPlane = new Vector4(planeNormal.x, planeNormal.y, planeNormal.z, d);
 
             Matrix4x4 reflection = Matrix4x4.zero;
@@ -213,17 +261,13 @@ namespace Crest
 
             // Setup oblique projection matrix so that near plane is our reflection
             // plane. This way we clip everything below/above it for free.
-            Vector4 clipPlane = CameraSpacePlane(_camReflections, planePos, planeNormal, 1.0f);
+            Vector4 clipPlane = CameraSpacePlane(_camReflections, planePos, planeNormal, 1.0f, offset);
             _camReflections.projectionMatrix = _camViewpoint.CalculateObliqueMatrix(clipPlane);
 
             // Set custom culling matrix from the current camera
             _camReflections.cullingMatrix = _camViewpoint.projectionMatrix * _camViewpoint.worldToCameraMatrix;
 
             _camReflections.targetTexture = _reflectionTexture;
-
-            // Invert culling because view is mirrored
-            bool oldCulling = GL.invertCulling;
-            GL.invertCulling = !oldCulling;
 
             _camReflections.transform.position = newpos;
             Vector3 euler = _camViewpoint.transform.eulerAngles;
@@ -232,25 +276,54 @@ namespace Crest
 
             ForceDistanceCulling(_farClipPlane);
 
-            _camReflections.Render();
+            // We do not want the water plane when rendering planar reflections.
+            OceanRenderer.Instance.Root.gameObject.SetActive(false);
 
-            GL.invertCulling = oldCulling;
+            // Invert culling because view is mirrored
+            bool oldCulling = GL.invertCulling;
+            GL.invertCulling = !oldCulling;
 
-            // Restore shadows
-            if (_disableShadows)
+            // Optionally disable pixel lights for reflection/refraction
+            int oldPixelLightCount = QualitySettings.pixelLightCount;
+            if (_disablePixelLights) QualitySettings.pixelLightCount = 0;
+
+            // Optionally disable shadows for reflection/refraction
+            var oldShadowQuality = QualitySettings.shadows;
+            if (_disableShadows) QualitySettings.shadows = UnityEngine.ShadowQuality.Disable;
+
+            try
             {
-                QualitySettings.shadows = oldShadowQuality;
+                _camReflections.Render();
+            }
+            finally
+            {
+                // Restore global settings.
+                GL.invertCulling = oldCulling;
+                if (_disableShadows) QualitySettings.shadows = oldShadowQuality;
+                if (_disablePixelLights) QualitySettings.pixelLightCount = oldPixelLightCount;
             }
 
-            // Restore pixel light count
-            if (_disablePixelLights)
-            {
-                QualitySettings.pixelLightCount = oldPixelLightCount;
-            }
+            OceanRenderer.Instance.Root.gameObject.SetActive(true);
 
-            Refreshed(Time.renderedFrameCount); //remember this frame as last refreshed
+            // Remember this frame as last refreshed.
+            Refreshed(Time.renderedFrameCount);
         }
 
+        bool RequestRefresh(long frame)
+        {
+            if (_lastRefreshOnFrame <= 0 || RefreshPerFrames < 2)
+            {
+                // Not refreshed before or refresh every frame, not check frame counter.
+                return true;
+            }
+
+            return Math.Abs(_frameRefreshOffset) % RefreshPerFrames == frame % RefreshPerFrames;
+        }
+
+        void Refreshed(long currentframe)
+        {
+            _lastRefreshOnFrame = currentframe;
+        }
 
         /// <summary>
         /// Limit render distance for reflection camera for first 32 layers
@@ -271,6 +344,8 @@ namespace Crest
 
         void UpdateCameraModes()
         {
+            _camReflections.cullingMask = _reflectionLayers;
+
             // Set water camera to clear the same way as current camera
             _camReflections.renderingPath = _forceForwardRenderingPath ? RenderingPath.Forward : _camViewpoint.renderingPath;
             _camReflections.backgroundColor = new Color(0f, 0f, 0f, 0f);
@@ -328,27 +403,24 @@ namespace Crest
             // Camera for reflection
             if (!_camReflections)
             {
-                GameObject go = new GameObject("Water Refl Cam");
-                _camReflections = go.AddComponent<Camera>();
+                _camReflections = new GameObject("Crest Water Reflection Camera").AddComponent<Camera>();
+#if UNITY_EDITOR
+                _camReflections.name = $"Crest Water Reflection Camera ({currentCamera.name})";
+#endif
                 _camReflections.enabled = false;
-                _camReflections.transform.position = transform.position;
-                _camReflections.transform.rotation = transform.rotation;
-                _camReflections.cullingMask = _reflectionLayers;
+                _camReflections.transform.SetPositionAndRotation(transform.position, transform.rotation);
                 _camReflectionsSkybox = _camReflections.gameObject.AddComponent<Skybox>();
                 _camReflections.gameObject.AddComponent<FlareLayer>();
                 _camReflections.cameraType = CameraType.Reflection;
-
-                if (_hideCameraGameobject)
-                {
-                    go.hideFlags = HideFlags.HideAndDontSave;
-                }
             }
+
+            _camReflections.gameObject.hideFlags = _hideCameraGameobject ? HideFlags.HideAndDontSave : HideFlags.DontSave;
         }
 
         // Given position/normal of the plane, calculates plane in camera space.
-        Vector4 CameraSpacePlane(Camera cam, Vector3 pos, Vector3 normal, float sideSign)
+        Vector4 CameraSpacePlane(Camera cam, Vector3 pos, Vector3 normal, float sideSign, float offset)
         {
-            Vector3 offsetPos = pos + normal * _clipPlaneOffset;
+            Vector3 offsetPos = pos + normal * offset;
             Matrix4x4 m = cam.worldToCameraMatrix;
             Vector3 cpos = m.MultiplyPoint(offsetPos);
             Vector3 cnormal = m.MultiplyVector(normal).normalized * sideSign;
@@ -386,17 +458,43 @@ namespace Crest
                 PreparedReflections.Remove(_camViewpoint.GetHashCode());
             }
 
+            if (_camReflections)
+            {
+                _camReflections.targetTexture = null;
+                Helpers.Destroy(_camReflections.gameObject);
+                _camReflections = null;
+            }
+
             // Cleanup all the objects we possibly have created
             if (_reflectionTexture)
             {
                 Helpers.Destroy(_reflectionTexture);
                 _reflectionTexture = null;
             }
-            if (_camReflections)
-            {
-                Helpers.Destroy(_camReflections.gameObject);
-                _camReflections = null;
-            }
         }
     }
+
+#if UNITY_EDITOR
+    public partial class OceanPlanarReflection : IValidated
+    {
+        public bool Validate(OceanRenderer ocean, ValidatedHelper.ShowMessage showMessage)
+        {
+            var isValid = true;
+
+            if (_clearFlags != CameraClearFlags.Skybox)
+            {
+                showMessage
+                (
+                    "The <i>Clear Flags</i> is not set to <i>Skybox</i>. " +
+                    "Any shaders which do not write alpha (eg some tree leaves) will not appear in the final reflections.",
+                    "Change <i>Clear Flags</i> to <i>Skybox</i>.",
+                    ValidatedHelper.MessageType.Info, this,
+                    (x) => x.FindProperty(nameof(_clearFlags)).intValue = (int)CameraClearFlags.Skybox
+                );
+            }
+
+            return isValid;
+        }
+    }
+#endif
 }

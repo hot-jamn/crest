@@ -146,8 +146,12 @@ namespace Crest
             _spectrumInit.name = "CrestFFTSpectrumInit";
             _spectrumInit.Create();
 
-            rtd.colorFormat = RenderTextureFormat.RGFloat;
-
+#if UNITY_2021_3_OR_NEWER
+            if (SystemInfo.SupportsRandomWriteOnRenderTextureFormat(RenderTextureFormat.RGFloat))
+#endif
+            {
+                rtd.colorFormat = RenderTextureFormat.RGFloat;
+            }
 
             Helpers.SafeCreateRenderTexture(ref _spectrumHeight, rtd);
             _spectrumHeight.name = "CrestFFTSpectrumHeight";
@@ -396,7 +400,7 @@ namespace Crest
             buf.SetComputeIntParam(_shaderSpectrum, ShaderIDs.s_Size, _resolution);
             buf.SetComputeFloatParam(_shaderSpectrum, ShaderIDs.s_WindSpeed, _windSpeed);
             buf.SetComputeFloatParam(_shaderSpectrum, ShaderIDs.s_Turbulence, _windTurbulence);
-            buf.SetComputeFloatParam(_shaderSpectrum, ShaderIDs.s_Gravity, Mathf.Abs(Physics.gravity.magnitude));
+            buf.SetComputeFloatParam(_shaderSpectrum, ShaderIDs.s_Gravity, OceanRenderer.Instance.Gravity);
             buf.SetComputeFloatParam(_shaderSpectrum, ShaderIDs.s_Period, _loopPeriod);
             buf.SetComputeVectorParam(_shaderSpectrum, ShaderIDs.s_WindDir, new Vector2(Mathf.Cos(_windDirRad), Mathf.Sin(_windDirRad)));
             buf.SetComputeTextureParam(_shaderSpectrum, _kernelSpectrumInit, ShaderIDs.s_SpectrumControls, _texSpectrumControls);

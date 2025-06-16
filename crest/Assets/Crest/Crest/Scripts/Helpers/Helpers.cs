@@ -6,7 +6,12 @@ namespace Crest
 {
     using System.Reflection;
     using UnityEngine;
+    using UnityEngine.Experimental.Rendering;
     using UnityEngine.Rendering;
+
+#if !UNITY_2023_2_OR_NEWER
+    using GraphicsFormatUsage = UnityEngine.Experimental.Rendering.FormatUsage;
+#endif
 
     /// <summary>
     /// General purpose helpers which, at the moment, do not warrant a seperate file.
@@ -26,7 +31,7 @@ namespace Crest
         }
 
         public static BindingFlags s_AnyMethod = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance |
-            BindingFlags.Static;
+            BindingFlags.Static | BindingFlags.FlattenHierarchy;
 
         public static T GetCustomAttribute<T>(System.Type type) where T : System.Attribute
         {
@@ -137,6 +142,78 @@ namespace Crest
             a = temp;
         }
 
+        public static void ClearRenderTexture(RenderTexture texture, Color clear, bool depth = true, bool color = true)
+        {
+            var active = RenderTexture.active;
+
+            // Using RenderTexture.active will not write to all slices.
+            Graphics.SetRenderTarget(texture, 0, CubemapFace.Unknown, -1);
+            // TODO: Do we need to disable GL.sRGBWrite as it is linear to linear.
+            GL.Clear(depth, color, clear);
+
+            // Graphics.SetRenderTarget can be equivalent to setting RenderTexture.active:
+            // https://docs.unity3d.com/ScriptReference/Graphics.SetRenderTarget.html
+            // Restore previous active texture or it can incur a warning when releasing:
+            // Releasing render texture that is set to be RenderTexture.active!
+            RenderTexture.active = active;
+        }
+
+        // R16G16B16A16_SFloat appears to be the most compatible format.
+        // https://docs.unity3d.com/Manual/class-TextureImporterOverride.html#texture-compression-support-platforms
+        // https://learn.microsoft.com/en-us/windows/win32/direct3d12/typed-unordered-access-view-loads#supported-formats-and-api-calls
+        readonly static GraphicsFormat s_FallbackGraphicsFormat = GraphicsFormat.R16G16B16A16_SFloat;
+
+#if UNITY_2021_3_OR_NEWER
+#if CREST_VERIFYRANDOMWRITESUPPORT
+        static bool SupportsRandomWriteOnRenderTextureFormat(GraphicsFormat format)
+        {
+            var rtFormat = GraphicsFormatUtility.GetRenderTextureFormat(format);
+            return System.Enum.IsDefined(typeof(RenderTextureFormat), rtFormat)
+                && SystemInfo.SupportsRandomWriteOnRenderTextureFormat(rtFormat);
+        }
+#endif
+#endif
+
+        internal static GraphicsFormat GetCompatibleTextureFormat(GraphicsFormat format, GraphicsFormatUsage usage, bool randomWrite = false)
+        {
+            var useFallback = false;
+            var result = SystemInfo.GetCompatibleFormat(format, usage);
+
+            if (result == GraphicsFormat.None)
+            {
+                Debug.Log($"Crest: The graphics device does not support the render texture format {format}. Will attempt to use fallback.");
+                useFallback = true;
+            }
+            else if (result != format)
+            {
+                Debug.Log($"Crest: Using render texture format {result} instead of {format}.");
+            }
+
+#if UNITY_2021_3_OR_NEWER
+#if CREST_VERIFYRANDOMWRITESUPPORT
+            if (!useFallback && randomWrite && !SupportsRandomWriteOnRenderTextureFormat(result))
+            {
+                Debug.Log($"Crest: The graphics device does not support the render texture format {result} with random read/write. Will attempt to use fallback.");
+                useFallback = true;
+            }
+#endif
+#endif
+
+            // Check if fallback is compatible before using it.
+            if (useFallback && format == s_FallbackGraphicsFormat)
+            {
+                Debug.Log($"Crest: Fallback {s_FallbackGraphicsFormat} is not supported on this device. Please inform us.");
+                useFallback = false;
+            }
+
+            if (useFallback)
+            {
+                result = s_FallbackGraphicsFormat;
+            }
+
+            return result;
+        }
+
         public static void SetGlobalKeyword(string keyword, bool enabled)
         {
             if (enabled)
@@ -237,13 +314,60 @@ namespace Crest
             }
         }
 
-        /// <summary>
-        /// Blit using full screen triangle. Supports more features than CommandBuffer.Blit like the RenderPipeline tag
-        /// in sub-shaders.
-        /// </summary>
-        public static void Blit(CommandBuffer buffer, RenderTargetIdentifier target, Material material, int pass, MaterialPropertyBlock properties = null)
+        internal static T[] FindObjectsByType<T>() where T : Object
+        {
+#if UNITY_2023_3_OR_NEWER
+            return Object.FindObjectsByType<T>(FindObjectsSortMode.None);
+#else
+            return Object.FindObjectsOfType<T>();
+#endif
+        }
+
+        internal static T FindFirstObjectByType<T>() where T : Object
+        {
+#if UNITY_2023_3_OR_NEWER
+            return Object.FindFirstObjectByType<T>();
+#else
+            return Object.FindObjectOfType<T>();
+#endif
+        }
+
+        public static void SetRenderTarget(CommandBuffer buffer, RenderTargetIdentifier target)
         {
             buffer.SetRenderTarget(target);
+        }
+
+        public static void SetRenderTarget(CommandBuffer buffer, RenderTargetIdentifier color, RenderTargetIdentifier depth)
+        {
+            buffer.SetRenderTarget(color, depth);
+        }
+
+        /// <summary>
+        /// Blit using full screen triangle. Supports more features than CommandBuffer.Blit like the RenderPipeline tag
+        /// in sub-shaders. Never use for data.
+        /// </summary>
+        public static void Blit(CommandBuffer buffer, RenderTargetIdentifier target, Material material, int pass = -1, MaterialPropertyBlock properties = null)
+        {
+            SetRenderTarget(buffer, target);
+            buffer.DrawProcedural
+            (
+                Matrix4x4.identity,
+                material,
+                pass,
+                MeshTopology.Triangles,
+                vertexCount: 3,
+                instanceCount: 1,
+                properties
+            );
+        }
+
+        /// <summary>
+        /// Blit using full screen triangle. Supports more features than CommandBuffer.Blit like the RenderPipeline tag
+        /// in sub-shaders. Never use for fullscreen effects.
+        /// </summary>
+        public static void Blit(CommandBuffer buffer, RenderTexture target, Material material, int pass = -1, int depthSlice = -1, MaterialPropertyBlock properties = null)
+        {
+            buffer.SetRenderTarget(target, mipLevel: 0, CubemapFace.Unknown, depthSlice);
             buffer.DrawProcedural
             (
                 Matrix4x4.identity,
@@ -332,6 +456,26 @@ namespace Crest
                 }
             }
 
+            public static Color MaybeLinear(this Color color)
+            {
+                return QualitySettings.activeColorSpace == ColorSpace.Linear ? color.linear : color;
+            }
+
+            public static Color MaybeGamma(this Color color)
+            {
+                return QualitySettings.activeColorSpace == ColorSpace.Linear ? color : color.gamma;
+            }
+
+            public static Color FinalColor(this Light light)
+            {
+                var linear = GraphicsSettings.lightsUseLinearIntensity;
+                var color = linear ? light.color.linear : light.color;
+                color *= light.intensity;
+                if (linear && light.useColorTemperature) color *= Mathf.CorrelatedColorTemperatureToRGB(light.colorTemperature);
+                if (!linear) color = color.MaybeLinear();
+                return linear ? color.MaybeGamma() : color;
+            }
+
             ///<summary>
             /// Sets the msaaSamples property to the highest supported MSAA level in the settings.
             ///</summary>
@@ -342,6 +486,15 @@ namespace Crest
                 // https://docs.unity3d.com/ScriptReference/SystemInfo.GetRenderTextureSupportedMSAASampleCount.html
                 descriptor.msaaSamples = Helpers.IsMSAAEnabled(camera) ? Mathf.Max(QualitySettings.antiAliasing, 1) : 1;
                 descriptor.msaaSamples = SystemInfo.GetRenderTextureSupportedMSAASampleCount(descriptor);
+            }
+
+            public static Vector3 LinearVelocity(this Rigidbody rigidbody)
+            {
+#if UNITY_2023_3_OR_NEWER
+                return rigidbody.linearVelocity;
+#else
+                return rigidbody.velocity;
+#endif
             }
         }
     }

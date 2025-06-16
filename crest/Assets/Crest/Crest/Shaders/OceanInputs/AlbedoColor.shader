@@ -43,7 +43,11 @@ Shader "Crest/Inputs/Albedo/Color"
                 float2 uv : TEXCOORD0;
             };
 
-            sampler2D _Texture;
+            CBUFFER_START(CrestPerOceanInput)
+            float3 _DisplacementAtInputPosition;
+            CBUFFER_END
+
+            UNITY_DECLARE_TEX2D(_Texture);
             float4 _Texture_ST;
 
             half4 _Color;
@@ -52,7 +56,9 @@ Shader "Crest/Inputs/Albedo/Color"
             Varyings Vertex(Attributes input)
             {
                 Varyings output;
-                output.vertex = UnityObjectToClipPos(input.vertex);
+                float3 positionWS = mul(unity_ObjectToWorld, float4(input.vertex.xyz, 1.0)).xyz;
+                positionWS.xz -= _DisplacementAtInputPosition.xz;
+                output.vertex = mul(UNITY_MATRIX_VP, float4(positionWS, 1.0));
                 output.uv = TRANSFORM_TEX(input.uv, _Texture);
                 output.color = input.color;
                 return output;
@@ -60,7 +66,7 @@ Shader "Crest/Inputs/Albedo/Color"
 
             fixed4 Fragment(Varyings i) : SV_Target
             {
-                fixed4 color = tex2D(_Texture, i.uv) * _Color;
+                fixed4 color = UNITY_SAMPLE_TEX2D(_Texture, i.uv) * _Color;
                 clip(color.a - _Cutoff + 0.0001);
                 return color * i.color;
             }

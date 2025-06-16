@@ -8,9 +8,7 @@ using Unity.Collections.LowLevel.Unsafe;
 using Crest.Internal;
 using System.Linq;
 using UnityEngine.Rendering;
-#if UNITY_EDITOR
 using UnityEditor;
-#endif
 
 #if !UNITY_2020_3_OR_NEWER
 #error This version of Crest requires Unity 2020.3 or later.
@@ -37,8 +35,25 @@ namespace Crest
         int _version = 0;
 #pragma warning restore 414
 
+        [Tooltip("Uses a provided WindZone as the source of global wind. Must be directional. Wind speed units is assumed to be in m/s.")]
+        public WindZone _globalWindZone;
+
         [Tooltip("Base wind speed in km/h. Controls wave conditions. Can be overridden on ShapeGerstner components."), Range(0, 150f, power: 2f)]
+        [Predicated(nameof(_globalWindZone), inverted: true, null)]
         public float _globalWindSpeed = 150f;
+        public float WindSpeedKPH => _globalWindZone != null ? _globalWindZone.windMain * 3.6f : _globalWindSpeed;
+
+        [Tooltip("Base wind direction. Controls wave conditions. Can be overriden on Shape components.")]
+        [Predicated(nameof(_globalWindZone), inverted: true, null)]
+        [Range(-180, 180)]
+        public float _globalWindDirectionAngle = 0f;
+        public float WindDirectionAngle => _globalWindZone != null ? Mathf.Atan2(_globalWindZone.transform.forward.z, _globalWindZone.transform.forward.x) * Mathf.Rad2Deg : _globalWindDirectionAngle;
+
+        [Tooltip("Base wind turbulence. Controls wave conditions. Can be overriden on ShapeFFT components.")]
+        [Predicated(nameof(_globalWindZone), inverted: true, null)]
+        [Range(0, 1)]
+        public float _globalWindTurbulence = 0.145f;
+        public float WindTurbulence => _globalWindZone != null ? _globalWindZone.windTurbulence : _globalWindTurbulence;
 
         [Tooltip("The viewpoint which drives the ocean detail. Defaults to the camera."), SerializeField]
         Transform _viewpoint;
@@ -201,9 +216,19 @@ namespace Crest
         int _layer = 4; // Water
         public int Layer => _layer;
 
+        [Tooltip("Provide your own gravity value instead of Physics.gravity.")]
+        [SerializeField]
+        bool _overrideGravity;
+
+        [Tooltip("Gravity for all wave calculations.")]
+        [Predicated(nameof(_overrideGravity))]
+        [DecoratedField]
+        [SerializeField]
+        float _gravity = -9.8f;
+
         [SerializeField, Delayed, Tooltip("Multiplier for physics gravity."), Range(0f, 10f)]
         float _gravityMultiplier = 1f;
-        public float Gravity => _gravityMultiplier * Physics.gravity.magnitude;
+        public float Gravity => _gravityMultiplier * Mathf.Abs(_overrideGravity ? _gravity : Physics.gravity.y);
 
         [Tooltip("Whether 'Water Body' components will cull the ocean tiles. Disable if you want to use the 'Water Body' 'Material Override' feature and still have an ocean.")]
         public bool _waterBodyCulling = true;
@@ -220,7 +245,7 @@ namespace Crest
         [Tooltip("Drops the height for maximum ocean detail based on waves. This means if there are big waves, max detail level is reached at a lower height, which can help visual range when there are very large waves and camera is at sea level."), SerializeField, Range(0f, 1f)]
         float _dropDetailHeightBasedOnWaves = 0.2f;
 
-        [SerializeField, Delayed, Tooltip("Resolution of ocean LOD data. Use even numbers like 256 or 384.")]
+        [SerializeField, Delayed, Tooltip("Resolution of ocean LOD data. Must be intervals of 128 (eg 256, 384, 512).")]
         int _lodDataResolution = 384;
         public int LodDataResolution => _lodDataResolution;
 
@@ -311,6 +336,13 @@ namespace Crest
         public float _underwaterCullLimit = 0.001f;
         internal const float UNDERWATER_CULL_LIMIT_MINIMUM = 0.000001f;
         internal const float UNDERWATER_CULL_LIMIT_MAXIMUM = 0.01f;
+
+        [Tooltip("If you experience non mesh renderer inputs (like particles) flickering, then try enabling this option. It can cause other issues like GUI freezing when rendering Crest camera to a render texture.")]
+        [SerializeField]
+        public bool _fixFlickeringParticleInput;
+
+        [Tooltip("Enables render queue sorting within a pass (eg transparent). This disables the front-to-back sort optimization.")]
+        public bool _enableRenderQueueSorting;
 
 
         [Header("Edit Mode Params")]
@@ -593,20 +625,23 @@ namespace Crest
             // Other components may place objects under the container so it needs to be created early.
             Container = new GameObject();
             Container.name = "Container";
-            Container.gameObject.hideFlags = _debug._showOceanTileGameObjects ? HideFlags.DontSave : HideFlags.HideAndDontSave;
+            Container.hideFlags = _debug._showOceanTileGameObjects ? HideFlags.DontSave : HideFlags.HideAndDontSave;
             Container.transform.SetParent(transform, worldPositionStays: false);
 
             Instance = this;
             Scale = Mathf.Clamp(Scale, _minScale, _maxScale);
 
             // Make sure we have correct defaults in case simulations are not enabled.
-            LodDataMgrClipSurface.BindNullToGraphicsShaders();
-            LodDataMgrDynWaves.BindNullToGraphicsShaders();
-            LodDataMgrFlow.BindNullToGraphicsShaders();
-            LodDataMgrFoam.BindNullToGraphicsShaders();
-            LodDataMgrSeaFloorDepth.BindNullToGraphicsShaders();
-            LodDataMgrShadow.BindNullToGraphicsShaders();
-            LodDataMgrAlbedo.BindNullToGraphicsShaders();
+            if (!RunningWithoutGPU)
+            {
+                LodDataMgrClipSurface.BindNullToGraphicsShaders();
+                LodDataMgrDynWaves.BindNullToGraphicsShaders();
+                LodDataMgrFlow.BindNullToGraphicsShaders();
+                LodDataMgrFoam.BindNullToGraphicsShaders();
+                LodDataMgrSeaFloorDepth.BindNullToGraphicsShaders();
+                LodDataMgrShadow.BindNullToGraphicsShaders();
+                LodDataMgrAlbedo.BindNullToGraphicsShaders();
+            }
 
             CreateDestroySubSystems();
 
@@ -968,7 +1003,11 @@ namespace Crest
                     return false;
                 }
 #if UNITY_EDITOR
-                if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.OpenGLES2 ||
+                if
+                (
+#if !UNITY_2023_1_OR_NEWER
+                    SystemInfo.graphicsDeviceType == GraphicsDeviceType.OpenGLES2 ||
+#endif
                     SystemInfo.graphicsDeviceType == GraphicsDeviceType.OpenGLES3 ||
                     SystemInfo.graphicsDeviceType == GraphicsDeviceType.OpenGLCore)
                 {
@@ -1029,6 +1068,7 @@ namespace Crest
             Hashy.AddInt(_geometryDownSampleFactor, ref settingsHash);
             Hashy.AddInt(_lodCount, ref settingsHash);
             Hashy.AddFloat(_extentsSizeMultiplier, ref settingsHash);
+            Hashy.AddBool(_enableRenderQueueSorting, ref settingsHash);
             Hashy.AddBool(_debug._forceBatchMode, ref settingsHash);
             Hashy.AddBool(_debug._forceNoGPU, ref settingsHash);
             Hashy.AddBool(_debug._showOceanTileGameObjects, ref settingsHash);
@@ -1304,7 +1344,7 @@ namespace Crest
                 {
                     // Find the distance. Adding the FO offset will exclude FO shifts so we can determine a normal teleport.
                     // FO shifts are visually the same position and it is incorrect to treat it as a normal teleport.
-                    var teleportDistanceSqr = (_oldViewerPosition - camera.transform.position - FloatingOrigin.TeleportOriginThisFrame).sqrMagnitude;
+                    var teleportDistanceSqr = (_oldViewerPosition - camera.transform.position - ShiftingOrigin.TeleportOriginThisFrame).sqrMagnitude;
                     // Threshold as sqrMagnitude.
                     var thresholdSqr = _teleportThreshold * _teleportThreshold;
                     hasTeleported = teleportDistanceSqr > thresholdSqr;
@@ -1323,9 +1363,12 @@ namespace Crest
 
             // Smoothly varying version of viewer height to combat sudden changes in water level that are possible
             // when there are local bodies of water
-            _viewerHeightAboveWaterSmooth = _teleportTimerForHeightQueries > 0f
-                ? ViewerHeightAboveWater
-                : Mathf.Lerp(_viewerHeightAboveWaterSmooth, ViewerHeightAboveWater, 0.05f);
+            _viewerHeightAboveWaterSmooth = Mathf.Lerp
+            (
+                _viewerHeightAboveWaterSmooth,
+                ViewerHeightAboveWater,
+                _teleportTimerForHeightQueries > 0f || _lodDataSeaDepths == null || !_lodDataSeaDepths.Settings._allowVaryingWaterLevel ? 1f : 0.05f
+            );
         }
 
         void LateUpdateLods()
@@ -1592,7 +1635,7 @@ namespace Crest
         [UnityEditor.Callbacks.DidReloadScripts]
         private static void OnReLoadScripts()
         {
-            Instance = FindObjectOfType<OceanRenderer>();
+            Instance = Helpers.FindFirstObjectByType<OceanRenderer>();
         }
 
         private void OnDrawGizmos()
@@ -1606,7 +1649,7 @@ namespace Crest
                     {
                         Gizmos.color = Color.yellow;
                         var width = _cascadeParams.Current[lodIdx]._texelWidth * _cascadeParams.Current[lodIdx]._textureRes;
-                        Gizmos.DrawWireCube(Root.transform.position, new Vector3(width, 0, width));
+                        Gizmos.DrawWireCube(_cascadeParams.Current[lodIdx]._posSnapped.XNZ(SeaLevel), new Vector3(width, 0, width));
                     }
                 }
             }
@@ -1657,7 +1700,7 @@ namespace Crest
         {
             ocean.Validate(ocean, ValidatedHelper.DebugLog);
 
-            foreach (var component in FindObjectsOfType<MonoBehaviour>().OfType<IValidated>())
+            foreach (var component in Helpers.FindObjectsByType<MonoBehaviour>().OfType<IValidated>())
             {
                 if (component is OceanRenderer) continue;
                 component.Validate(ocean, ValidatedHelper.DebugLog);
@@ -1688,7 +1731,7 @@ namespace Crest
             }
 
             // OceanRenderer
-            if (FindObjectsOfType<OceanRenderer>().Length > 1)
+            if (Helpers.FindObjectsByType<OceanRenderer>().Length > 1)
             {
                 showMessage
                 (
@@ -1699,9 +1742,9 @@ namespace Crest
             }
 
             // ShapeGerstnerBatched
-            var gerstnerBatches = FindObjectsOfType<ShapeGerstnerBatched>();
-            var gerstners = FindObjectsOfType<ShapeGerstner>();
-            var ffts = FindObjectsOfType<ShapeFFT>();
+            var gerstnerBatches = Helpers.FindObjectsByType<ShapeGerstnerBatched>();
+            var gerstners = Helpers.FindObjectsByType<ShapeGerstner>();
+            var ffts = Helpers.FindObjectsByType<ShapeFFT>();
             if (gerstnerBatches.Length == 0 && gerstners.Length == 0 && ffts.Length == 0)
             {
                 showMessage
@@ -1769,7 +1812,7 @@ namespace Crest
                     );
                 }
 
-#if UNITY_POSTPROCESSING_ENABLED
+#if UNITY_POSTPROCESSING_BROKEN_ENABLED
                 // Validate "Post-Processing".
                 // Only check built-in renderer and Camera.main with enabled PostProcessLayer component.
                 if (GraphicsSettings.currentRenderPipeline == null && Camera.main != null &&
@@ -1778,10 +1821,10 @@ namespace Crest
                 {
                     showMessage
                     (
-                        "<i>Post Processing</i> is enabled on the scene view. " +
+                        "<i>Post-Processing</i> is enabled on the scene view. " +
                         "There is a Unity bug where gizmos and grid lines will render over opaque objects. " +
-                        "Please see <i>Known Issues</i> in the documentation for a link to vote on having this issue resolved.",
-                        "Disable <i>Post Processing</i> on the scene view.",
+                        "This has been resolved in <i>Post-Processing</i> version 3.4.0.",
+                        "Disable <i>Post-Processing</i> on the scene view or upgrade to version 3.4.0.",
                         ValidatedHelper.MessageType.Warning, ocean,
                         _ =>
                         {
@@ -1904,6 +1947,11 @@ namespace Crest
 
             // LOD data resolution multiple of 2 for general GPU texture reasons (like pixel quads)
             _lodDataResolution -= _lodDataResolution % 2;
+
+            // Round to divisble by 16. It is the smallest number which is robust enough based
+            // on a Geometry Down Sample Factor of one. It is still possible to incur gaps if
+            // the latter is higher.
+            _lodDataResolution = Mathf.RoundToInt(16f * Mathf.Round(_lodDataResolution / 16f));
 
             _geometryDownSampleFactor = Mathf.ClosestPowerOfTwo(Mathf.Max(_geometryDownSampleFactor, 1));
 

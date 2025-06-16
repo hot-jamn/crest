@@ -5,10 +5,7 @@
 using UnityEngine;
 using UnityEngine.Rendering;
 using System.Collections.Generic;
-
-#if UNITY_EDITOR
 using UnityEditor;
-#endif
 
 namespace Crest
 {
@@ -61,11 +58,11 @@ namespace Crest
         [SerializeField]
         bool _warnOnSpeedClamp = false;
 
-#if UNITY_EDITOR
+#pragma warning disable 414
         [Header("Debug")]
         [Tooltip("Draws debug lines at each substep position. Editor only."), SerializeField]
         bool _debugSubsteps = false;
-#endif
+#pragma warning restore 414
 
         Vector3 _velocity;
         Vector3 _velocityClamped;
@@ -95,7 +92,7 @@ namespace Crest
 
         internal static List<SphereWaterInteraction> s_Instances = new List<SphereWaterInteraction>();
         static int s_InstanceIndex;
-        static bool s_InstanceDataNeedsClearing;
+        static int s_ClearedFrameCount = -1;
 
         static int sp_velocity = Shader.PropertyToID("_Velocity");
         static int sp_weight = Shader.PropertyToID("_Weight");
@@ -111,29 +108,15 @@ namespace Crest
 
         public bool IgnoreTransitionWeight => false;
 
+#if UNITY_EDITOR
         private void Start()
         {
-            if (OceanRenderer.Instance == null)
+            if (EditorApplication.isPlaying)
             {
-                enabled = false;
-                return;
-            }
-
-#if UNITY_EDITOR
-            if (EditorApplication.isPlaying && !Validate(OceanRenderer.Instance, ValidatedHelper.DebugLog))
-            {
-                enabled = false;
-                return;
-            }
-#endif
-
-            if (OceanRenderer.Instance._lodDataDynWaves == null)
-            {
-                // Don't run without a dyn wave sim
-                enabled = false;
-                return;
+                Validate(OceanRenderer.Instance, ValidatedHelper.DebugLog);
             }
         }
+#endif
 
         static void ClearInstanceData()
         {
@@ -147,18 +130,19 @@ namespace Crest
             s_MPB?.Clear();
 
             s_InstanceIndex = 0;
-            s_InstanceDataNeedsClearing = false;
+            s_ClearedFrameCount = Time.frameCount;
         }
 
         void LateUpdate()
         {
-            if (s_InstanceDataNeedsClearing)
+            if (Time.frameCount != s_ClearedFrameCount)
             {
                 ClearInstanceData();
             }
 
             var ocean = OceanRenderer.Instance;
             if (ocean == null) return;
+            if (ocean._lodDataDynWaves == null) return;
 
             _sampleHeightHelper.Init(transform.position, 2f * _radius);
             _sampleHeightHelper.Sample(out Vector3 disp, out _, out _);
@@ -203,7 +187,7 @@ namespace Crest
                 var position = transform.position;
                 // Apply sea level to matrix so we can use it for rendering and gizmos.
                 position.y = OceanRenderer.Instance.SeaLevel;
-                var scale = Vector3.one * 2f * _radius;
+                var scale = _radius * 2f * Vector3.one;
                 scale.z = 0f;
                 _renderMatrix = Matrix4x4.TRS(position, Quaternion.Euler(90f, 0f, 0f), scale);
             }
@@ -274,6 +258,8 @@ namespace Crest
 
         void OnEnable()
         {
+            _posLast = transform.position;
+
             if (s_Material == null)
             {
                 s_Material = new Material(Shader.Find("Crest/Inputs/Dynamic Waves/Sphere-Water Interaction"));
@@ -309,7 +295,8 @@ namespace Crest
             {
                 var col = 0.7f * (Time.frameCount % 2 == 1 ? Color.green : Color.red);
                 var pos = transform.position - _velocity * (timeBeforeCurrentTime - _velocityOffset);
-                Debug.DrawLine(pos - transform.right + transform.up, pos + transform.right + transform.up, col, 0.5f);
+                var right = Vector3.Cross(Vector3.up, _velocity.normalized);
+                Debug.DrawLine(pos - right + transform.up, pos + right + transform.up, col, 0.5f);
             }
 #endif
 
@@ -363,8 +350,6 @@ namespace Crest
             // Clear any arrays modified in Draw as this is per LOD.
             s_WeightProperties.Clear();
             s_InstanceIndex = 0;
-            // Other arrays are cleared next frame.
-            s_InstanceDataNeedsClearing = true;
         }
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
@@ -383,7 +368,7 @@ namespace Crest
         {
             var isValid = true;
 
-            if (ocean != null && !ocean.CreateDynamicWaveSim && showMessage == ValidatedHelper.HelpBox)
+            if (ocean != null && !ocean.CreateDynamicWaveSim)
             {
                 showMessage
                 (

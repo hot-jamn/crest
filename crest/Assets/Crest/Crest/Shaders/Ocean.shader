@@ -208,7 +208,9 @@ Shader "Crest/Ocean"
 			// out the gbuffer data and do post processing before running it. Discussion of this in issue #53.
 			"Queue"="Geometry+510"
 			"IgnoreProjector"="True"
-			"RenderType"="Opaque"
+			// RenderType is used for shader replacement which will never work well.
+			// Transparent prevents water being rendered into depth+normals which fixes SAO.
+			"RenderType"="Transparent"
 			"DisableBatching"="True"
 		}
 
@@ -221,6 +223,8 @@ Shader "Crest/Ocean"
 		{
 			// Culling user defined - can be inverted for under water
 			Cull [_CullMode]
+
+			Blend SrcAlpha OneMinusSrcAlpha
 
 			Tags
 			{
@@ -362,7 +366,6 @@ Shader "Crest/Ocean"
 				// sample shape textures - always lerp between 2 LOD scales, so sample two textures
 				o.flow_shadow = half4(0.0, 0.0, 0.0, 0.0);
 
-				o.lodAlpha_worldXZUndisplaced_oceanDepth.w = CREST_OCEAN_DEPTH_BASELINE;
 				// Sample shape textures - always lerp between 2 LOD scales, so sample two textures
 
 				// Calculate sample weights. params.z allows shape to be faded out (used on last lod to support pop-less scale transitions)
@@ -408,11 +411,12 @@ Shader "Crest/Ocean"
 				// Data that needs to be sampled at the displaced position
 				half seaLevelOffset = 0.0;
 				o.seaLevelDerivs = 0.0;
+				half seaDepth = 0;
 				if (wt_smallerLod > 0.0001)
 				{
 					const float3 uv_slice_smallerLodDisp = WorldToUV(o.worldPos.xz, cascadeData0, _LD_SliceIndex);
 
-					SampleSeaDepth(_LD_TexArray_SeaFloorDepth, uv_slice_smallerLodDisp, wt_smallerLod, o.lodAlpha_worldXZUndisplaced_oceanDepth.w, seaLevelOffset, cascadeData0, o.seaLevelDerivs);
+					SampleSeaDepth(_LD_TexArray_SeaFloorDepth, uv_slice_smallerLodDisp, wt_smallerLod, seaDepth, seaLevelOffset, cascadeData0, o.seaLevelDerivs);
 
 					#if _SHADOWS_ON
 					// The minimum sampling weight is lower than others to fix shallow water colour popping.
@@ -426,7 +430,7 @@ Shader "Crest/Ocean"
 				{
 					const float3 uv_slice_biggerLodDisp = WorldToUV(o.worldPos.xz, cascadeData1, _LD_SliceIndex + 1);
 
-					SampleSeaDepth(_LD_TexArray_SeaFloorDepth, uv_slice_biggerLodDisp, wt_biggerLod, o.lodAlpha_worldXZUndisplaced_oceanDepth.w, seaLevelOffset, cascadeData1, o.seaLevelDerivs);
+					SampleSeaDepth(_LD_TexArray_SeaFloorDepth, uv_slice_biggerLodDisp, wt_biggerLod, seaDepth, seaLevelOffset, cascadeData1, o.seaLevelDerivs);
 
 					#if _SHADOWS_ON
 					// The minimum sampling weight is lower than others to fix shallow water colour popping.
@@ -470,22 +474,34 @@ Shader "Crest/Ocean"
 					half clipValue = 0.0;
 
 					uint slice0; uint slice1; float alpha;
-					PosToSliceIndices(input.worldPos.xz, 0.0, _CrestCascadeData[0]._scale, slice0, slice1, alpha);
+					// Do not include transition slice to avoid blending as we do a black border instead.
+					PosToSliceIndices(input.worldPos.xz, 0, _SliceCount - 1.0, _CrestCascadeData[0]._scale, slice0, slice1, alpha);
 
 					const CascadeParams cascadeData0 = _CrestCascadeData[slice0];
 					const CascadeParams cascadeData1 = _CrestCascadeData[slice1];
 					const float weight0 = (1.0 - alpha) * cascadeData0._weight;
 					const float weight1 = (1.0 - weight0) * cascadeData1._weight;
 
+					bool clear = false;
 					if (weight0 > 0.001)
 					{
 						const float3 uv = WorldToUV(input.worldPos.xz, cascadeData0, slice0);
 						SampleClip(_LD_TexArray_ClipSurface, uv, weight0, clipValue);
+
+						if ((float)_LD_SliceIndex == _SliceCount - 1.0 && IsOutsideOfUV(uv.xy, cascadeData0._oneOverTextureRes))
+						{
+							clear = true;
+						}
 					}
 					if (weight1 > 0.001)
 					{
 						const float3 uv = WorldToUV(input.worldPos.xz, cascadeData1, slice1);
 						SampleClip(_LD_TexArray_ClipSurface, uv, weight1, clipValue);
+					}
+
+					if (clear)
+					{
+						clipValue = _CrestClipByDefault;
 					}
 
 					clipValue = lerp(_CrestClipByDefault, clipValue, weight0 + weight1);
@@ -512,20 +528,18 @@ Shader "Crest/Ocean"
 				half3 screenPos = input.screenPosXYW;
 				half2 uvDepth = screenPos.xy / screenPos.z;
 
-#if CREST_WATER_VOLUME
-				ApplyVolumeToOceanSurface(input.positionCS);
-#endif
-
-				#if _CLIPUNDERTERRAIN_ON
-				clip(input.lodAlpha_worldXZUndisplaced_oceanDepth.w + 2.0);
-				#endif
-
 				half3 view = normalize(_WorldSpaceCameraPos - input.worldPos);
 
 				// water surface depth, and underlying scene opaque surface depth
 				float pixelZ = CrestLinearEyeDepth(input.positionCS.z);
 				// Raw depth is logarithmic for perspective, and linear (0-1) for orthographic.
 				float rawDepth = CREST_SAMPLE_SCENE_DEPTH_X(uvDepth);
+
+#if CREST_WATER_VOLUME
+				float rawFrontFaceZ;
+				bool backface = ApplyVolumeToOceanSurface(input.positionCS, rawFrontFaceZ, rawDepth);
+#endif
+
 				float sceneZ = CrestLinearEyeDepth(rawDepth);
 
 				float3 lightDir = WaveHarmonic::Crest::WorldSpaceLightDir(input.worldPos);
@@ -547,6 +561,8 @@ Shader "Crest/Ocean"
 				#if _ALBEDO_ON
 				half4 albedo = 0.0;
 				#endif
+
+				float seaDepth = 0;
 				if (wt_smallerLod > 0.001)
 				{
 					const float3 uv_slice_smallerLod = WorldToUV(positionXZWSUndisplaced, cascadeData0, _LD_SliceIndex);
@@ -558,6 +574,10 @@ Shader "Crest/Ocean"
 
 					#if _ALBEDO_ON
 					SampleAlbedo(_LD_TexArray_Albedo, uv_slice_smallerLod, wt_smallerLod, albedo);
+					#endif
+
+					#if defined(_SUBSURFACESHALLOWCOLOUR_ON) || defined(_CLIPUNDERTERRAIN_ON)
+					SampleSeaDepth(_LD_TexArray_SeaFloorDepth, uv_slice_smallerLod, wt_smallerLod, seaDepth);
 					#endif
 				}
 				if (wt_biggerLod > 0.001)
@@ -572,14 +592,32 @@ Shader "Crest/Ocean"
 					#if _ALBEDO_ON
 					SampleAlbedo(_LD_TexArray_Albedo, uv_slice_biggerLod, wt_biggerLod, albedo);
 					#endif
+
+					#if defined(_SUBSURFACESHALLOWCOLOUR_ON) || defined(_CLIPUNDERTERRAIN_ON)
+					SampleSeaDepth(_LD_TexArray_SeaFloorDepth, uv_slice_biggerLod, wt_biggerLod, seaDepth);
+					#endif
 				}
+
+#if _SUBSURFACESHALLOWCOLOUR_ON
+				seaDepth = min(_SubSurfaceDepthMax, seaDepth);
+				if (_LD_SliceIndex == ((uint)_SliceCount - 1))
+				{
+					seaDepth = lerp(_SubSurfaceDepthMax, seaDepth, wt_smallerLod);
+				}
+#endif
+
+				#if _CLIPUNDERTERRAIN_ON
+				clip(seaDepth + 2.0);
+				#endif
 
 #if _SUBSURFACESCATTERING_ON
 				// Extents need the default SSS to avoid popping and not being noticeably different.
 				if (_LD_SliceIndex == ((uint)_SliceCount - 1))
 				{
-					sss = CREST_SSS_MAXIMUM - CREST_SSS_RANGE;
+					sss += 1.0 - wt_smallerLod;
 				}
+
+				sss = saturate(CREST_SSS_MAXIMUM - CREST_SSS_RANGE * sss);
 #endif
 
 				#if _APPLYNORMALMAPPING_ON
@@ -650,10 +688,7 @@ Shader "Crest/Ocean"
 				// Compute color of ocean - in-scattered light + refracted scene
 				half3 scatterCol = ScatterColour
 				(
-					input.lodAlpha_worldXZUndisplaced_oceanDepth.w,
-#if defined(CREST_UNDERWATER_BEFORE_TRANSPARENT) && defined(_SHADOWS_ON)
-					underwater ? UnderwaterShadowSSS(_WorldSpaceCameraPos.xz) :
-#endif
+					seaDepth,
 					shadow.x,
 					sss,
 					view,
@@ -680,6 +715,9 @@ Shader "Crest/Ocean"
 					bubbleCol,
 					underwater,
 					scatterCol,
+#if CREST_WATER_VOLUME
+					backface,
+#endif
 					cascadeData0,
 					cascadeData1
 				);
@@ -700,12 +738,12 @@ Shader "Crest/Ocean"
 				#if _UNDERWATER_ON
 				if (underwater)
 				{
-					ApplyReflectionUnderwater(view, n_pixel, lightDir, shadow.y, screenPos.xyzz, scatterCol, reflAlpha, col);
+					ApplyReflectionUnderwater(view, n_pixel, lightDir, shadow.y, screenPos.xyzz, scatterCol, 1.0, col);
 				}
 				else
 				#endif
 				{
-					ApplyReflectionSky(view, n_pixel, lightDir, shadow.y, screenPos.xyzz, pixelZ, reflAlpha, col);
+					ApplyReflectionSky(view, n_pixel, lightDir, shadow.y, screenPos.xyzz, pixelZ, 1.0, col);
 				}
 
 				// Override final result with white foam - bubbles on surface
@@ -715,7 +753,7 @@ Shader "Crest/Ocean"
 
 				// Composite albedo input on top
 				#if _ALBEDO_ON
-				col = lerp(col, albedo.xyz, albedo.w * reflAlpha);
+				col = lerp(col, albedo.xyz, albedo.w);
 				#endif
 
 				// Fog
@@ -727,8 +765,30 @@ Shader "Crest/Ocean"
 #if CREST_UNDERWATER_BEFORE_TRANSPARENT
 				else
 				{
+					half shadows = 1.0;
+
+#if _SHADOWS_ON
+					// If shadows are enabled then we need to recalculate the scattering with the
+					// global shadow value.
+					scatterCol = ScatterColour
+					(
+						seaDepth,
+						UnderwaterShadowSSS(_WorldSpaceCameraPos.xz),
+						sss,
+						view,
+						_CrestAmbientLighting,
+						lightDir,
+						lightCol,
+						underwater
+					);
+#endif
+
+					float depthFogDistance = pixelZ;
+#if CREST_WATER_VOLUME
+					depthFogDistance -= CrestLinearEyeDepth(rawFrontFaceZ);
+#endif
 					// underwater - do depth fog
-					col = lerp(col, scatterCol, saturate(1. - exp(-_DepthFogDensity.xyz * pixelZ)));
+					col = lerp(col, scatterCol, saturate(1. - exp(-_CrestDepthFogDensity.xyz * depthFogDistance)));
 				}
 #endif
 
@@ -746,7 +806,7 @@ Shader "Crest/Ocean"
 				#endif
 				#endif
 
-				return half4(col, 1.);
+				return half4(col, reflAlpha);
 			}
 
 			ENDCG

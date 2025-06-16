@@ -5,10 +5,7 @@
 using UnityEngine;
 using UnityEngine.Rendering;
 using Crest.Spline;
-
-#if UNITY_EDITOR
 using UnityEditor;
-#endif
 
 namespace Crest
 {
@@ -26,16 +23,20 @@ namespace Crest
         [Tooltip("When true, the wave spectrum is evaluated once on startup in editor play mode and standalone builds, rather than every frame. This is less flexible but reduces the performance cost significantly."), SerializeField]
         bool _spectrumFixedAtRuntime = true;
 
+        [Tooltip("When true, uses the wind direction on this component rather than the wind direction from the Ocean Renderer component.")]
+        public bool _overrideGlobalWindDirection;
+
         [Tooltip("Primary wave direction heading (deg). This is the angle from x axis in degrees that the waves are oriented towards. If a spline is being used to place the waves, this angle is relative ot the spline."), Range(-180, 180)]
         public float _waveDirectionHeadingAngle = 0f;
-        public Vector2 PrimaryWaveDirection => new Vector2(Mathf.Cos(Mathf.PI * _waveDirectionHeadingAngle / 180f), Mathf.Sin(Mathf.PI * _waveDirectionHeadingAngle / 180f));
+        public float WaveDirectionHeadingAngle => _overrideGlobalWindDirection ? _waveDirectionHeadingAngle : OceanRenderer.Instance.WindDirectionAngle;
+        public Vector2 PrimaryWaveDirection => new Vector2(Mathf.Cos(Mathf.PI * WaveDirectionHeadingAngle / 180f), Mathf.Sin(Mathf.PI * WaveDirectionHeadingAngle / 180f));
 
         [Tooltip("When true, uses the wind speed on this component rather than the wind speed from the Ocean Renderer component.")]
         public bool _overrideGlobalWindSpeed = false;
 
         [Tooltip("Wind speed in km/h. Controls wave conditions."), Range(0, 150f, power: 2f), Predicated("_overrideGlobalWindSpeed")]
         public float _windSpeed = 20f;
-        public float WindSpeed => (_overrideGlobalWindSpeed ? _windSpeed : OceanRenderer.Instance._globalWindSpeed) / 3.6f;
+        public float WindSpeed => (_overrideGlobalWindSpeed ? _windSpeed : OceanRenderer.Instance.WindSpeedKPH) / 3.6f;
 
         [Tooltip("How much these waves respect the shallow water attenuation setting in the Animated Waves Settings. Set to 0 to ignore shallow water."), SerializeField, Range(0f, 1f)]
         public float _respectShallowWaterAttenuation = 1f;
@@ -69,11 +70,16 @@ namespace Crest
 
         [Header("Spline Settings")]
 
-        [SerializeField]
+        [Tooltip("Feathers along the spline. To feather the start/end, use spline point data.")]
+        [Predicated(typeof(Spline.Spline))]
+        [DecoratedField, SerializeField]
+        float _featherWidth;
+
+        [SerializeField, DecoratedField, OnChange(nameof(OnSplineChange))]
         bool _overrideSplineSettings = false;
-        [SerializeField, Predicated("_overrideSplineSettings"), DecoratedField]
+        [SerializeField, Predicated("_overrideSplineSettings"), DecoratedField, OnChange(nameof(OnSplineChange))]
         float _radius = 50f;
-        [SerializeField, Predicated("_overrideSplineSettings"), Delayed]
+        [SerializeField, Predicated("_overrideSplineSettings"), Delayed, OnChange(nameof(OnSplineChange))]
         int _subdivisions = 1;
 
         [SerializeField]
@@ -95,18 +101,20 @@ namespace Crest
 
         protected Mesh _meshForDrawingWaves;
 
-        static OceanWaveSpectrum s_DefaultSpectrum;
-        protected static OceanWaveSpectrum DefaultSpectrum
+        protected virtual OceanWaveSpectrum DefaultSpectrum => WindSpectrum;
+
+        static OceanWaveSpectrum s_WindSpectrum;
+        protected static OceanWaveSpectrum WindSpectrum
         {
             get
             {
-                if (s_DefaultSpectrum == null)
+                if (s_WindSpectrum == null)
                 {
-                    s_DefaultSpectrum = ScriptableObject.CreateInstance<OceanWaveSpectrum>();
-                    s_DefaultSpectrum.name = "Default Waves (auto)";
+                    s_WindSpectrum = ScriptableObject.CreateInstance<OceanWaveSpectrum>();
+                    s_WindSpectrum.name = "Wind Waves (auto)";
                 }
 
-                return s_DefaultSpectrum;
+                return s_WindSpectrum;
             }
         }
 
@@ -117,6 +125,8 @@ namespace Crest
         {
             readonly ShapeWaves _shapeWaves;
 
+            float _featherWidth;
+
             Material _material;
             Mesh _mesh;
 
@@ -125,27 +135,31 @@ namespace Crest
             static Component _previousShapeComponent;
             static int _previousLodIndex = -1;
 
-            public WaveBatch(ShapeWaves shapeWaves, float wavelength, int waveBufferSliceIndex, Material material, Mesh mesh)
+            public WaveBatch(ShapeWaves shapeWaves, float wavelength, int waveBufferSliceIndex, Material material, Mesh mesh, float featherWidth)
             {
                 _shapeWaves = shapeWaves;
-                Wavelength = wavelength;
+                // Need sample higher than Nyquist to get good results, especially when waves flowing.
+                Wavelength = wavelength / OceanRenderer.Instance._lodDataAnimWaves.Settings.WaveResolutionMultiplier;
                 _waveBufferSliceIndex = waveBufferSliceIndex;
                 _mesh = mesh;
                 _material = material;
+                _featherWidth = featherWidth;
             }
 
-            public void UpdateData(float wavelength, int waveBufferSliceIndex, Material material, Mesh mesh)
+            public void UpdateData(float wavelength, int waveBufferSliceIndex, Material material, Mesh mesh, float featherWidth)
             {
-                Wavelength = wavelength;
+                // Need sample higher than Nyquist to get good results, especially when waves flowing.
+                Wavelength = wavelength / OceanRenderer.Instance._lodDataAnimWaves.Settings.WaveResolutionMultiplier;
                 _waveBufferSliceIndex = waveBufferSliceIndex;
                 _mesh = mesh;
                 _material = material;
+                _featherWidth = featherWidth;
             }
 
             // The ocean input system uses this to decide which lod this batch belongs in
             public float Wavelength { get; private set; }
 
-            public bool Enabled { get => true; set { } }
+            public bool Enabled { get => OceanRenderer.Instance.Gravity != 0f; set { } }
 
             public bool IgnoreTransitionWeight => _shapeWaves._blendMode == ShapeBlendMode.Blend;
 
@@ -166,8 +180,10 @@ namespace Crest
                 if (isBlendPassNeeded || finalWeight > 0f)
                 {
                     buf.SetGlobalInt(sp_WaveBufferSliceIndex, _waveBufferSliceIndex);
-                    buf.SetGlobalFloat(sp_AverageWavelength, Wavelength * 1.5f);
+                    buf.SetGlobalFloat(sp_AverageWavelength, Wavelength * 1.5f * OceanRenderer.Instance._lodDataAnimWaves.Settings.WaveResolutionMultiplier);
                 }
+
+                buf.SetGlobalFloat(RegisterLodDataInputBase.sp_FeatherWidth, _featherWidth);
 
                 if (isBlendPassNeeded)
                 {
@@ -258,6 +274,15 @@ namespace Crest
             UpdateEditorOnly();
 #endif
 
+            if (_spectrum != null)
+            {
+                _activeSpectrum = _spectrum;
+            }
+            else
+            {
+                _activeSpectrum = DefaultSpectrum;
+            }
+
             // Ensure batches assigned to correct slots.
             if (_firstUpdate || UpdateDataEachFrame)
             {
@@ -298,8 +323,6 @@ namespace Crest
 
             if (_firstUpdate)
             {
-                CreateOrUpdateSplineMesh();
-
                 if (!_spline && TryGetComponent(out _renderer) && TryGetComponent<MeshFilter>(out var meshFilter) && meshFilter.sharedMesh)
                 {
                     _meshForDrawingWaves = meshFilter.sharedMesh;
@@ -347,11 +370,11 @@ namespace Crest
 
                 if (_batches[i] == null)
                 {
-                    _batches[i] = new WaveBatch(this, MinWavelength(i), i, _matGenerateWaves, _meshForDrawingWaves);
+                    _batches[i] = new WaveBatch(this, MinWavelength(i), i, _matGenerateWaves, _meshForDrawingWaves, _spline != null ? _featherWidth : 0f);
                 }
                 else
                 {
-                    _batches[i].UpdateData(MinWavelength(i), i, _matGenerateWaves, _meshForDrawingWaves);
+                    _batches[i].UpdateData(MinWavelength(i), i, _matGenerateWaves, _meshForDrawingWaves, _spline != null ? _featherWidth : 0f);
                 }
 
                 RegisterLodDataInput<LodDataMgrAnimWaves>.RegisterInput(_batches[i], queue, subQueue);
@@ -361,6 +384,7 @@ namespace Crest
         void Awake()
         {
             s_InstanceCount++;
+            CreateOrUpdateSplineMesh();
         }
 
         void OnDestroy()
@@ -370,9 +394,9 @@ namespace Crest
             {
                 DestroySharedResources();
 
-                if (s_DefaultSpectrum != null)
+                if (s_WindSpectrum != null)
                 {
-                    Helpers.Destroy(s_DefaultSpectrum);
+                    Helpers.Destroy(s_WindSpectrum);
                 }
             }
         }
@@ -386,8 +410,7 @@ namespace Crest
             {
                 _activeSpectrum = _spectrum;
             }
-
-            if (_activeSpectrum == null)
+            else
             {
                 _activeSpectrum = DefaultSpectrum;
             }
@@ -458,22 +481,20 @@ namespace Crest
         }
     }
 
+    public partial class ShapeWaves : IReceiveSplineChangeMessages
+    {
+        public void OnSplineChange()
+        {
+            CreateOrUpdateSplineMesh();
+        }
+    }
+
 #if UNITY_EDITOR
     // Editor
     public partial class ShapeWaves : IReceiveSplinePointOnDrawGizmosSelectedMessages
     {
         void UpdateEditorOnly()
         {
-            if (_spectrum != null)
-            {
-                _activeSpectrum = _spectrum;
-            }
-
-            if (_activeSpectrum == null)
-            {
-                _activeSpectrum = DefaultSpectrum;
-            }
-
             // Unassign mesh
             if (_meshForDrawingWaves != null && !TryGetComponent<Spline.Spline>(out _) && !TryGetComponent<MeshRenderer>(out _))
             {
@@ -497,12 +518,6 @@ namespace Crest
 
         private void OnDrawGizmosSelected()
         {
-            // Restrict this call as it is costly.
-            if (Selection.activeGameObject == gameObject)
-            {
-                CreateOrUpdateSplineMesh();
-            }
-
             DrawMesh();
         }
 
@@ -521,7 +536,6 @@ namespace Crest
 
         public void OnSplinePointDrawGizmosSelected(SplinePoint point)
         {
-            CreateOrUpdateSplineMesh();
             OnDrawGizmosSelected();
         }
 

@@ -64,10 +64,6 @@ The result of the query accurately tracks the height of the surface, including a
 Baked FFT Data (CPU)
 ^^^^^^^^^^^^^^^^^^^^
 
-.. admonition:: Preview
-
-   This feature is in preview and may change in the future.
-
 In scenarios where a GPU is not present such as for headless servers, a CPU option is available.
 
 To use this feature, select a *Shape FFT* component that is generating the waves in a scene and enable the **Enable Baked Collision**.
@@ -87,13 +83,6 @@ After the bake completes the current active *Animated Waves Sim Settings* will b
    -  Only a single set of waves from one *Shape FFT* component is supported. This collision does not support multiple sets of waves.
    -  The *Depth Cache* components are not supported. In order to get a one to one match between the visuals and the collision data, depth caches should not be used.
    -  Varying water levels such as rivers flowing down a gradient or lakes at different altitudes is not supported. This feature assumes a fixed sea level for the whole scene.
-
-.. sponsor::
-
-   Sponsoring us will help increase our development bandwidth which could work towards solving the aforementioned limitations.
-
-   .. trello:: https://trello.com/c/EJCQhvsL
-
 
 .. _collisions-gerstner-waves-cpu:
 
